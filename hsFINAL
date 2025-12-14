@@ -19,13 +19,14 @@ const colors = {
   accent: '#D4AF37',
 };
 
+// PERUBAHAN 1 & 2: Urutan dan Ikon Modul
 const MODULES = [
-  { name: 'Inspiration', icon: Sparkles, id: 'arrangement' },
-  { name: 'Mahar Design', icon: Gem, id: 'mahar' },
+  { name: 'Magic Photo', icon: Wand2, id: 'magic', disabled: false }, // Urutan ke-1, Ikon Wand2
+  { name: 'Inspiration', icon: Gift, id: 'arrangement' }, // Urutan ke-2, Ikon Gift
+  { name: 'Mahar Design', icon: Layout, id: 'mahar' }, // Urutan ke-3, Ikon Layout
   { name: 'Flower Bouquet', icon: Flower, id: 'bouquet' }, 
-  { name: 'Invoice Maker', icon: ScrollText, id: 'invoice' },
-  { name: 'Item Checker', icon: ClipboardCheck, id: 'checker' },
-  { name: 'Magic Photo', icon: Zap, id: 'magic', disabled: false },
+  { name: 'Item Checker', icon: ClipboardCheck, id: 'checker' }, // Urutan ke-5
+  { name: 'Invoice Maker', icon: ScrollText, id: 'invoice' }, // Urutan ke-6
 ];
 
 const PRESET_OPTIONS = {
@@ -192,6 +193,24 @@ const PRESET_OPTIONS = {
 };
 
 const APP_LOGO_URL = "https://lh3.googleusercontent.com/d/1LNdn8mDbGAUzicCvbOwYPCyFjc4B6UhA";
+
+// --- GLOBAL HELPER: SAFE DOWNLOAD FOR IOS/MOBILE ---
+const safeDownload = (dataUrl, filename) => {
+    try {
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = filename;
+        // Penting untuk iOS: Append ke body sebelum click
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    } catch (error) {
+        console.error("Download error:", error);
+        alert("Gagal mendownload otomatis. Silakan tekan dan tahan gambar untuk menyimpan manual.");
+        // Fallback: Buka di tab baru jika download gagal
+        window.open(dataUrl, '_blank');
+    }
+};
 
 // --- KOMPONEN UI DASAR ---
 
@@ -522,10 +541,8 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
             // Force scroll to top to capture full height
             window.scrollTo(0,0);
             const canvas = await window.html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
-            const link = document.createElement('a');
-            link.download = filename;
-            link.href = canvas.toDataURL('image/png');
-            link.click();
+            // Gunakan fungsi download aman untuk iOS
+            safeDownload(canvas.toDataURL('image/png'), filename);
         } catch (error) {
             console.error("Download failed:", error);
             alert("Gagal mengunduh laporan.");
@@ -595,9 +612,12 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                                     <Trash2 className="w-4 h-4" />
                                 </button>
                                 
-                                <div className="grid grid-cols-12 gap-3 mb-3">
-                                    <div className="col-span-1 flex items-center justify-center font-bold text-gray-400">{index + 1}.</div>
-                                    <div className="col-span-8">
+                                {/* PERBAIKAN MOBILE: Ubah grid-cols-12 menjadi stack di mobile */}
+                                <div className="grid grid-cols-1 md:grid-cols-12 gap-3 mb-3">
+                                    <div className="col-span-1 md:col-span-1 flex items-center justify-start md:justify-center font-bold text-gray-400">
+                                        <span className="md:hidden mr-2">Item</span>{index + 1}.
+                                    </div>
+                                    <div className="col-span-1 md:col-span-8">
                                         <label className="text-[10px] text-gray-500 font-bold uppercase">Nama Barang</label>
                                         <input 
                                             type="text" 
@@ -607,7 +627,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                                             onChange={(e) => handleUpdateItem(item.id, 'name', e.target.value)}
                                         />
                                     </div>
-                                    <div className="col-span-3">
+                                    <div className="col-span-1 md:col-span-3">
                                         <label className="text-[10px] text-gray-500 font-bold uppercase">Jumlah</label>
                                         <input 
                                             type="number" 
@@ -694,110 +714,113 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                 </button>
 
                 {/* DYNAMIC PAPER PREVIEW */}
-                <div id="checker-preview" className="bg-white w-full max-w-[210mm] h-auto p-10 shadow-2xl text-sm text-gray-800 relative mt-4 lg:mt-0 box-border flex flex-col">
-                    
-                    {/* Header */}
-                    <div className="flex justify-between items-start border-b-2 border-gray-800 pb-4 mb-6">
-                        <div className="flex gap-4 items-center">
-                            <img src={brandLogoUrl || APP_LOGO_URL} className="w-16 h-16 object-contain" alt="Logo" />
-                            <div>
-                                <h1 className="text-2xl font-bold uppercase tracking-wider" style={{ color: colors.text }}>BERITA ACARA</h1>
-                                <p className="text-sm font-semibold text-gray-500 uppercase tracking-widest">Penerimaan Barang Hantaran</p>
+                {/* PERBAIKAN MOBILE: Tambahkan overflow-x-auto untuk container preview */}
+                <div className="w-full overflow-x-auto">
+                    <div id="checker-preview" className="bg-white w-[210mm] min-w-[210mm] h-auto p-10 shadow-2xl text-sm text-gray-800 relative mt-4 lg:mt-0 box-border flex flex-col mx-auto">
+                        
+                        {/* Header */}
+                        <div className="flex justify-between items-start border-b-2 border-gray-800 pb-4 mb-6">
+                            <div className="flex gap-4 items-center">
+                                <img src={brandLogoUrl || APP_LOGO_URL} className="w-16 h-16 object-contain" alt="Logo" />
+                                <div>
+                                    <h1 className="text-2xl font-bold uppercase tracking-wider" style={{ color: colors.text }}>BERITA ACARA</h1>
+                                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-widest">Penerimaan Barang Hantaran</p>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <div className="text-xl font-bold font-mono text-gray-600">{receiptNo}</div>
+                                <p className="text-sm text-gray-500">{new Date(receiptDate).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
                             </div>
                         </div>
-                        <div className="text-right">
-                            <div className="text-xl font-bold font-mono text-gray-600">{receiptNo}</div>
-                            <div className="text-sm text-gray-500">{new Date(receiptDate).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</div>
-                        </div>
-                    </div>
 
-                    {/* Parties */}
-                    <div className="grid grid-cols-2 gap-8 mb-8">
-                        <div>
-                            <p className="text-xs text-gray-500 uppercase font-bold mb-1">Diterima Oleh (Vendor)</p>
-                            <p className="font-bold text-lg">{brandName}</p>
-                            <p className="text-xs text-gray-600 whitespace-pre-wrap">{brandContact}</p>
+                        {/* Parties */}
+                        <div className="grid grid-cols-2 gap-8 mb-8">
+                            <div>
+                                <p className="text-xs text-gray-500 uppercase font-bold mb-1">Diterima Oleh (Vendor)</p>
+                                <p className="font-bold text-lg">{brandName}</p>
+                                <p className="text-xs text-gray-600 whitespace-pre-wrap">{brandContact}</p>
+                            </div>
+                            <div className="text-right">
+                                 <p className="text-xs text-gray-500 uppercase font-bold mb-1">Diserahkan Oleh (Klien)</p>
+                                 <p className="font-bold text-lg">{clientName || '....................'}</p>
+                                 <p className="text-xs text-gray-600 whitespace-pre-wrap">{clientContact || '....................'}</p>
+                            </div>
                         </div>
-                        <div className="text-right">
-                             <p className="text-xs text-gray-500 uppercase font-bold mb-1">Diserahkan Oleh (Klien)</p>
-                             <p className="font-bold text-lg">{clientName || '....................'}</p>
-                             <p className="text-xs text-gray-600 whitespace-pre-wrap">{clientContact || '....................'}</p>
+
+                        {/* Disclaimer Text */}
+                        <div className="bg-gray-50 border-l-4 p-3 text-xs text-gray-600 italic mb-6" style={{ borderColor: colors.secondary }}>
+                            Dengan ini kedua belah pihak menyatakan bahwa barang-barang di bawah ini telah diserahkan dan diterima dalam kondisi sebagaimana didokumentasikan dalam foto terlampir. Segala cacat yang tercatat menjadi bukti kondisi awal penerimaan.
                         </div>
-                    </div>
 
-                    {/* Disclaimer Text */}
-                    <div className="bg-gray-50 border-l-4 p-3 text-xs text-gray-600 italic mb-6" style={{ borderColor: colors.secondary }}>
-                        Dengan ini kedua belah pihak menyatakan bahwa barang-barang di bawah ini telah diserahkan dan diterima dalam kondisi sebagaimana didokumentasikan dalam foto terlampir. Segala cacat yang tercatat menjadi bukti kondisi awal penerimaan.
-                    </div>
-
-                    {/* Items & Photos Table */}
-                    <div className="mb-8">
-                        <table className="w-full border-collapse">
-                            <thead>
-                                <tr className="border-b-2 border-gray-300">
-                                    <th className="text-left py-2 w-10">#</th>
-                                    <th className="text-left py-2">Nama Barang & Bukti Kondisi</th>
-                                    <th className="text-center py-2 w-20">Qty</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {items.map((item, idx) => (
-                                    <tr key={item.id} className="border-b border-gray-100 align-top">
-                                        <td className="py-4 font-bold text-gray-500">{idx + 1}</td>
-                                        <td className="py-4">
-                                            <div className="font-bold text-base mb-2">{item.name || 'Nama Barang Belum Diisi'}</div>
-                                            
-                                            {/* Photo Grid within Table */}
-                                            {item.photos.length > 0 && (
-                                                <div className="grid grid-cols-3 gap-2 mt-2">
-                                                    {item.photos.map((photo, pIdx) => (
-                                                        <div key={pIdx} className="relative border rounded-lg overflow-hidden bg-gray-50">
-                                                            <div className="aspect-[4/3] w-full bg-gray-200 mb-1 overflow-hidden rounded-sm">
-                                                                <img src={photo.url} className="w-full h-full object-cover" alt="Evidence" />
-                                                            </div>
-                                                            <p className="text-[10px] text-gray-600 leading-tight min-h-[2.5em]">
-                                                                {photo.note ? `"${photo.note}"` : '-'}
-                                                            </p>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="py-4 text-center font-bold">{item.qty}</td>
+                        {/* Items & Photos Table */}
+                        <div className="mb-8">
+                            <table className="w-full border-collapse">
+                                <thead>
+                                    <tr className="border-b-2 border-gray-800">
+                                        <th className="text-left py-2 w-10">#</th>
+                                        <th className="text-left py-2">Nama Barang & Bukti Kondisi</th>
+                                        <th className="text-center py-2 w-20">Qty</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+                                </thead>
+                                <tbody>
+                                    {items.map((item, idx) => (
+                                        <tr key={item.id} className="border-b border-gray-100 align-top">
+                                            <td className="py-4 font-bold text-gray-500">{idx + 1}</td>
+                                            <td className="py-4">
+                                                <div className="font-bold text-base mb-2">{item.name || 'Nama Barang Belum Diisi'}</div>
+                                                
+                                                {/* Photo Grid within Table */}
+                                                {item.photos.length > 0 && (
+                                                    <div className="grid grid-cols-3 gap-2 mt-2">
+                                                        {item.photos.map((photo, pIdx) => (
+                                                            <div key={pIdx} className="relative border rounded-lg overflow-hidden bg-gray-50">
+                                                                <div className="aspect-[4/3] w-full bg-gray-200 mb-1 overflow-hidden rounded-sm">
+                                                                    <img src={photo.url} className="w-full h-full object-cover" alt="Evidence" />
+                                                                </div>
+                                                                <p className="text-[10px] text-gray-600 leading-tight min-h-[2.5em]">
+                                                                    {photo.note ? `"${photo.note}"` : '-'}
+                                                                </p>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="py-4 text-center font-bold">{item.qty}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
 
-                    {/* Signatures Footer */}
-                    <div className="pt-8 border-t-2 border-gray-800">
-                        <div className="grid grid-cols-2 gap-20 text-center">
-                            <div>
-                                <p className="text-xs font-bold uppercase mb-4">Pihak Vendor</p>
-                                <div className="h-24 flex items-center justify-center mb-2">
-                                    {brandSignature ? <img src={brandSignature} className="h-full object-contain" alt="Sig" /> : <div className="text-gray-200 text-xs italic">Tanda Tangan Digital</div>}
+                        {/* Signatures Footer */}
+                        <div className="pt-8 border-t-2 border-gray-800">
+                            <div className="grid grid-cols-2 gap-20 text-center">
+                                <div>
+                                    <p className="text-xs font-bold uppercase mb-4">Pihak Vendor</p>
+                                    <div className="h-24 flex items-center justify-center mb-2">
+                                        {brandSignature ? <img src={brandSignature} className="h-full object-contain" alt="Sig" /> : <div className="text-gray-200 text-xs italic">Tanda Tangan Digital</div>}
+                                    </div>
+                                    <p className="font-bold border-t border-gray-300 pt-1 inline-block min-w-[150px]">{brandName}</p>
                                 </div>
-                                <p className="font-bold border-t border-gray-300 pt-1 inline-block min-w-[150px]">{brandName}</p>
+                                <div>
+                                    <p className="text-xs font-bold uppercase mb-4">Pihak Klien</p>
+                                    <div className="h-24 flex items-center justify-center mb-2">
+                                        {clientSignature ? <img src={clientSignature} className="h-full object-contain" alt="Sig" /> : <div className="text-gray-200 text-xs italic">Tanda Tangan Digital</div>}
+                                    </div>
+                                    <p className="font-bold border-t border-gray-300 pt-1 inline-block min-w-[150px]">{clientName || 'Nama Terang'}</p>
+                                </div>
                             </div>
-                            <div>
-                                <p className="text-xs font-bold uppercase mb-4">Pihak Klien</p>
-                                <div className="h-24 flex items-center justify-center mb-2">
-                                    {clientSignature ? <img src={clientSignature} className="h-full object-contain" alt="Sig" /> : <div className="text-gray-200 text-xs italic">Tanda Tangan Digital</div>}
+
+                            {/* Logo dan Teks Footer Baru */}
+                            <div className="mt-8 flex flex-col items-center">
+                                <img src={APP_LOGO_URL} className="w-12 h-12 object-contain mb-2" alt="App Logo" />
+                                <div className="text-center text-[10px] text-gray-400">
+                                    Dokumen ini dibuat secara digital melalui <span className="font-extrabold text-gray-700">HANTARAN STUDIO</span> App pada {new Date().toLocaleString('id-ID')}
                                 </div>
-                                <p className="font-bold border-t border-gray-300 pt-1 inline-block min-w-[150px]">{clientName || 'Nama Terang'}</p>
                             </div>
                         </div>
 
-                        {/* Logo dan Teks Footer Baru */}
-                        <div className="mt-8 flex flex-col items-center">
-                            <img src={APP_LOGO_URL} className="w-12 h-12 object-contain mb-2" alt="App Logo" />
-                            <div className="text-center text-[10px] text-gray-400">
-                                Dokumen ini dibuat secara digital melalui <span className="font-extrabold text-gray-700">HANTARAN STUDIO</span> App pada {new Date().toLocaleString('id-ID')}
-                            </div>
-                        </div>
                     </div>
-
                 </div>
             </div>
         </div>
@@ -845,10 +868,8 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
         const filename = `Invoice - ${brandName || 'Brand'} - ${clientName || 'Customer'}.png`;
         try {
             const canvas = await window.html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
-            const link = document.createElement('a');
-            link.download = filename;
-            link.href = canvas.toDataURL('image/png');
-            link.click();
+            // Gunakan fungsi download aman untuk iOS
+            safeDownload(canvas.toDataURL('image/png'), filename);
         } catch (error) {
             console.error("Gagal membuat gambar:", error);
             alert("Gagal membuat gambar. Pastikan gambar logo dapat diakses publik.");
@@ -915,11 +936,20 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
                     </div>
                     <div className="space-y-3">
                         {items.map((item) => (
-                            <div key={item.id} className="flex gap-2 items-start">
-                                <div className="flex-1"><input type="text" placeholder="Deskripsi (mis: Hantaran Box Acrylic)" className="w-full p-2 border rounded-lg text-sm" value={item.desc} onChange={(e) => updateItem(item.id, 'desc', e.target.value)} /></div>
-                                <div className="w-16"><input type="number" placeholder="Qty" className="w-full p-2 border rounded-lg text-sm text-center" value={item.qty} min="1" onChange={(e) => updateItem(item.id, 'qty', parseInt(e.target.value) || 0)} /></div>
-                                <div className="w-28"><input type="number" placeholder="Harga" className="w-full p-2 border rounded-lg text-sm text-right" value={item.price} onChange={(e) => updateItem(item.id, 'price', parseInt(e.target.value) || 0)} /></div>
-                                <button onClick={() => removeItem(item.id)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                            // PERBAIKAN MOBILE: Gunakan flex-wrap/col untuk layar kecil
+                            <div key={item.id} className="flex flex-col md:flex-row gap-2 items-start bg-gray-50 p-2 rounded-lg md:bg-transparent md:p-0">
+                                <div className="w-full md:flex-1">
+                                    <input type="text" placeholder="Deskripsi (mis: Hantaran Box Acrylic)" className="w-full p-2 border rounded-lg text-sm" value={item.desc} onChange={(e) => updateItem(item.id, 'desc', e.target.value)} />
+                                </div>
+                                <div className="flex gap-2 w-full md:w-auto">
+                                    <div className="w-1/3 md:w-16">
+                                        <input type="number" placeholder="Qty" className="w-full p-2 border rounded-lg text-sm text-center" value={item.qty} min="1" onChange={(e) => updateItem(item.id, 'qty', parseInt(e.target.value) || 0)} />
+                                    </div>
+                                    <div className="w-2/3 md:w-28">
+                                        <input type="number" placeholder="Harga" className="w-full p-2 border rounded-lg text-sm text-right" value={item.price} onChange={(e) => updateItem(item.id, 'price', parseInt(e.target.value) || 0)} />
+                                    </div>
+                                    <button onClick={() => removeItem(item.id)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -935,63 +965,66 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
                 <button onClick={handleDownloadImage} disabled={isImageGenerating} className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200" style={{ backgroundColor: colors.primary, color: 'white' }} title="Simpan Invoice sebagai Gambar (PNG)">
                     {isImageGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Download className="w-6 h-6" />}
                 </button>
-                <div id="invoice-preview" className="bg-white w-full max-w-[210mm] min-h-[297mm] p-8 shadow-2xl text-sm leading-relaxed text-gray-800 relative mt-4 lg:mt-0 box-border">
-                    <div className="flex justify-between items-start mb-8">
-                        <div>
-                             <h1 className="text-3xl font-bold tracking-wide" style={{ color: colors.primary }}>INVOICE</h1>
-                             <p className="font-bold mt-2 text-lg">{brandName || 'Nama Brand Anda'}</p>
-                             <p className="text-gray-500 text-xs whitespace-pre-wrap">{brandContactAddress || 'Alamat dan Kontak Brand'}</p>
-                             {brandInstagram && <p className="text-gray-500 text-xs">IG: {brandInstagram}</p>}
-                             {brandTiktok && <p className="text-gray-500 text-xs">TT: {brandTiktok}</p>}
+                {/* PERBAIKAN MOBILE: Container overflow-x-auto untuk preview */}
+                <div className="w-full overflow-x-auto">
+                    <div id="invoice-preview" className="bg-white w-[210mm] min-w-[210mm] min-h-[297mm] p-8 shadow-2xl text-sm leading-relaxed text-gray-800 relative mt-4 lg:mt-0 box-border mx-auto">
+                        <div className="flex justify-between items-start mb-8">
+                            <div>
+                                 <h1 className="text-3xl font-bold tracking-wide" style={{ color: colors.primary }}>INVOICE</h1>
+                                 <p className="font-bold mt-2 text-lg">{brandName || 'Nama Brand Anda'}</p>
+                                 <p className="text-gray-500 text-xs whitespace-pre-wrap">{brandContactAddress || 'Alamat dan Kontak Brand'}</p>
+                                 {brandInstagram && <p className="text-gray-500 text-xs">IG: {brandInstagram}</p>}
+                                 {brandTiktok && <p className="text-gray-500 text-xs">TT: {brandTiktok}</p>}
+                            </div>
+                            <div className="text-right">
+                                 <img src={brandLogoUrl || APP_LOGO_URL} alt="Brand Logo" className="w-16 h-16 object-contain ml-auto mb-2" crossOrigin="anonymous" />
+                                 <p className="font-mono text-gray-600">#{invoiceNumber}</p>
+                                 <p className="text-gray-500">{new Date(invoiceDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                            </div>
                         </div>
-                        <div className="text-right">
-                             <img src={brandLogoUrl || APP_LOGO_URL} alt="Brand Logo" className="w-16 h-16 object-contain ml-auto mb-2" crossOrigin="anonymous" />
-                             <p className="font-mono text-gray-600">#{invoiceNumber}</p>
-                             <p className="text-gray-500">{new Date(invoiceDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                        <div className="mb-8 border-b pb-4">
+                            <p className="text-gray-500 text-xs uppercase font-bold mb-1">Ditagihkan Kepada:</p>
+                            <h3 className="text-lg font-bold">{clientName || 'Nama Pelanggan'}</h3>
+                            <p className="text-gray-600 whitespace-pre-wrap">{clientAddress || 'Alamat Pelanggan'}</p>
                         </div>
-                    </div>
-                    <div className="mb-8 border-b pb-4">
-                        <p className="text-gray-500 text-xs uppercase font-bold mb-1">Ditagihkan Kepada:</p>
-                        <h3 className="text-lg font-bold">{clientName || 'Nama Pelanggan'}</h3>
-                        <p className="text-gray-600 whitespace-pre-wrap">{clientAddress || 'Alamat Pelanggan'}</p>
-                    </div>
-                    <table className="w-full mb-8 border-collapse">
-                        <thead>
-                            <tr className="border-b-2 border-gray-800">
-                                <th className="text-left py-2 font-bold uppercase text-xs">Deskripsi</th>
-                                <th className="text-center py-2 font-bold uppercase text-xs w-16">Qty</th>
-                                <th className="text-right py-2 font-bold uppercase text-xs w-32">Harga</th>
-                                <th className="text-right py-2 font-bold uppercase text-xs w-32">Total</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {items.map((item) => (
-                                <tr key={item.id} className="border-b border-gray-100">
-                                    <td className="py-3">{item.desc}</td>
-                                    <td className="py-3 text-center">{item.qty}</td>
-                                    <td className="py-3 text-right">{formatRupiah(item.price)}</td>
-                                    <td className="py-3 text-right font-medium">{formatRupiah(item.qty * item.price)}</td>
+                        <table className="w-full mb-8 border-collapse">
+                            <thead>
+                                <tr className="border-b-2 border-gray-800">
+                                    <th className="text-left py-2 font-bold uppercase text-xs">Deskripsi</th>
+                                    <th className="text-center py-2 font-bold uppercase text-xs w-16">Qty</th>
+                                    <th className="text-right py-2 font-bold uppercase text-xs w-32">Harga</th>
+                                    <th className="text-right py-2 font-bold uppercase text-xs w-32">Total</th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    <div className="flex justify-end mb-12">
-                        <div className="w-1/2">
-                            <div className="flex justify-between py-2 border-b"><span className="font-semibold">Subtotal</span><span>{formatRupiah(subtotal)}</span></div>
-                            <div className="flex justify-between py-2 text-xl font-bold text-gray-900 mt-2"><span>Total</span><span>{formatRupiah(total)}</span></div>
+                            </thead>
+                            <tbody>
+                                {items.map((item) => (
+                                    <tr key={item.id} className="border-b border-gray-100">
+                                        <td className="py-3">{item.desc}</td>
+                                        <td className="py-3 text-center">{item.qty}</td>
+                                        <td className="py-3 text-right">{formatRupiah(item.price)}</td>
+                                        <td className="py-3 text-right font-medium">{formatRupiah(item.qty * item.price)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        <div className="flex justify-end mb-12">
+                            <div className="w-1/2">
+                                <div className="flex justify-between py-2 border-b"><span className="font-semibold">Subtotal</span><span>{formatRupiah(subtotal)}</span></div>
+                                <div className="flex justify-between py-2 text-xl font-bold text-gray-900 mt-2"><span>Total</span><span>{formatRupiah(total)}</span></div>
+                            </div>
                         </div>
-                    </div>
-                    {/* PERBAIKAN: Memindahkan logo di atas teks dan menyesuaikan ukuran */}
-                    <div className="absolute bottom-8 left-8 right-8">
-                         <div className="bg-gray-50 p-4 rounded-lg border border-gray-100"><p className="font-bold text-xs mb-1">Catatan:</p><p className="text-gray-600 text-xs italic">{notes}</p></div>
-                         
-                         {/* FOOTER BARU DENGAN LOGO DI ATAS */}
-                         <div className="text-center text-xs text-gray-400 mt-6 flex flex-col items-center gap-1">
-                            <img src={APP_LOGO_URL} alt="App Logo" className="w-12 h-12 object-contain mb-1" crossOrigin="anonymous" />
-                            <p className="flex items-center gap-1">This invoice is generated by
-                                <span className="font-extrabold text-gray-700">HANTARAN STUDIO</span>
-                            </p>
-                         </div>
+                        {/* PERBAIKAN: Memindahkan logo di atas teks dan menyesuaikan ukuran */}
+                        <div className="absolute bottom-8 left-8 right-8">
+                             <div className="bg-gray-50 p-4 rounded-lg border border-gray-100"><p className="font-bold text-xs mb-1">Catatan:</p><p className="text-gray-600 text-xs italic">{notes}</p></div>
+                             
+                             {/* FOOTER BARU DENGAN LOGO DI ATAS */}
+                             <div className="text-center text-xs text-gray-400 mt-6 flex flex-col items-center gap-1">
+                                <img src={APP_LOGO_URL} alt="App Logo" className="w-12 h-12 object-contain mb-1" crossOrigin="anonymous" />
+                                <p className="flex items-center gap-1">This invoice is generated by
+                                    <span className="font-extrabold text-gray-700">HANTARAN STUDIO</span>
+                                </p>
+                             </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1099,11 +1132,11 @@ const FlowerBouquetForm = ({ onGenerate, isGenerating, colors }) => {
              <div className="w-full md:w-2/3 lg:w-1/2 mx-auto h-14 mt-4">
                  {isGenerating ? (
                     <div className="flex justify-center items-center h-full">
-                         <div className="w-10 h-10 border-4 border-t-transparent border-gray-400 rounded-full animate-spin"></div>
+                         <svg className="animate-spin h-10 w-10" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke={colors.primary} strokeWidth="4" fill="none" className="opacity-25" /><path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill={colors.secondary} /></svg>
                     </div>
                 ) : (
                     <button type="submit" className={`w-full py-3 px-8 text-lg font-bold text-white rounded-full transition-all duration-300 shadow-xl h-full flex items-center justify-center gap-2 hover:scale-105`} style={{ background: `linear-gradient(90deg, ${colors.primary} 0%, ${colors.supporting} 100%)` }}>
-                        <Flower className="w-5 h-5" /> Buat Buket
+                        Buat Buket
                     </button>
                 )}
             </div>
@@ -1115,10 +1148,8 @@ const FlowerBouquetResults = ({ results, isLoading, colors }) => {
     const images = results?.data?.images || [];
     
     const handleDownload = (url) => {
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `Bouquet-${Date.now()}.png`;
-        link.click();
+        // PERBAIKAN DOWNLOAD: Gunakan safeDownload untuk iOS
+        safeDownload(url, `Bouquet-${Date.now()}.png`);
     };
 
     if (isLoading) return <div className="p-8 h-full flex flex-col justify-center"><SkeletonLoading primaryColor={colors.primary} secondaryColor={colors.secondary} bgColor={colors.bg} /></div>;
@@ -1260,12 +1291,6 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
         <form onSubmit={handleSubmit} className="flex flex-col gap-6 p-4 md:p-6">
             <h2 className="text-3xl font-bold text-center mb-4" style={{ color: colors.text }}>Mahar Design Studio</h2>
             
-             <div className="flex justify-end">
-                <button type="button" onClick={handleAutoFill} className="flex items-center gap-2 px-4 py-2 rounded-full text-white text-sm font-bold shadow-md hover:shadow-lg transition transform hover:scale-105" style={{ background: `linear-gradient(90deg, ${colors.accent} 0%, ${colors.supporting} 100%)` }}>
-                    <Sparkles className="w-4 h-4" /> AI Auto Fill
-                </button>
-            </div>
-
             <section className="space-y-4">
                  <div className="p-4 rounded-xl border-l-4 bg-white shadow-sm" style={{ borderColor: colors.primary }}>
                      <h4 className="font-semibold text-gray-700 mb-3 flex items-center gap-2"><Coins className="w-4 h-4"/> Detail Isi Mahar</h4>
@@ -1287,6 +1312,13 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
                      </div>
                  </div>
 
+                 {/* PERBAIKAN: Tombol AI Auto Fill dipindah kesini (setelah Detail Isi Mahar) */}
+                 <div className="flex justify-end">
+                    <button type="button" onClick={handleAutoFill} className="flex items-center gap-2 px-4 py-2 rounded-full text-white text-sm font-bold shadow-md hover:shadow-lg transition transform hover:scale-105" style={{ background: `linear-gradient(90deg, ${colors.accent} 0%, ${colors.supporting} 100%)` }}>
+                        <Sparkles className="w-4 h-4" /> AI Auto Fill
+                    </button>
+                </div>
+
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {['FrameShape', 'ArrangementStyle', 'Culture', 'DecorationItems', 'BackgroundFabric'].map(key => (
                         <InputGroup key={key} label={key.replace(/([A-Z])/g, ' $1').trim()} isAuto={config[key].isAuto} onToggleAuto={() => toggleAuto(key)}>
@@ -1307,11 +1339,11 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
              <div className="w-full md:w-2/3 lg:w-1/2 mx-auto h-14 mt-4">
                  {isGenerating ? (
                     <div className="flex justify-center items-center h-full">
-                         <div className="w-10 h-10 border-4 border-t-transparent border-gray-400 rounded-full animate-spin"></div>
+                         <svg className="animate-spin h-10 w-10" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke={colors.primary} strokeWidth="4" fill="none" className="opacity-25" /><path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill={colors.secondary} /></svg>
                     </div>
                 ) : (
                     <button type="submit" className={`w-full py-3 px-8 text-lg font-bold text-white rounded-full transition-all duration-300 shadow-xl h-full flex items-center justify-center gap-2 hover:scale-105`} style={{ background: `linear-gradient(90deg, ${colors.primary} 0%, ${colors.supporting} 100%)` }}>
-                        <Gem className="w-5 h-5" /> Buat Desain Mahar
+                        Buat Desain Mahar
                     </button>
                 )}
             </div>
@@ -1326,10 +1358,8 @@ const MaharDesignResults = ({ results, isLoading, colors }) => {
     const [isModalOpen, setIsModalOpen] = useState(false);
 
     const handleDownload = (url) => {
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `Mahar-${Date.now()}.png`;
-        link.click();
+        // PERBAIKAN DOWNLOAD: Gunakan safeDownload
+        safeDownload(url, `Mahar-${Date.now()}.png`);
     };
 
     if (isLoading) return <div className="p-8 h-full flex flex-col justify-center"><SkeletonLoading primaryColor={colors.primary} secondaryColor={colors.secondary} bgColor={colors.bg} /></div>;
@@ -1351,7 +1381,7 @@ const MaharDesignResults = ({ results, isLoading, colors }) => {
                     <div key={idx} className="group relative rounded-2xl overflow-hidden shadow-xl border-4 bg-white cursor-pointer hover:scale-[1.02] transition duration-300" style={{ borderColor: idx === viewIndex ? colors.primary : 'transparent' }} onClick={() => { setViewIndex(idx); setIsModalOpen(true); }}>
                         <img src={img} alt={`Mahar ${idx+1}`} className="w-full h-auto object-cover aspect-square" />
                         <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                            <Maximize2 className="text-white w-8 h-8 drop-shadow-md" />
+                            <Maximize2 className="w-8 h-8 drop-shadow-md" />
                         </div>
                     </div>
                 ))}
@@ -1523,6 +1553,12 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                 promptParts.push(`**SYSTEM INSTRUCTION: DEEP VISUAL REASONING & GENERATION**`);
                 promptParts.push(`You are a world-class Product Photographer and CGI Artist. Before generating the image, perform a deep analysis.`);
                 
+                // --- CRITICAL OBJECT IDENTITY PROTECTION ---
+                promptParts.push(`**CRITICAL: OBJECT FIDELITY**`);
+                promptParts.push(`- The visual identity of the "Object" MUST remain 100% IDENTICAL to the reference image. NO HALLUCINATIONS.`);
+                promptParts.push(`- PRESERVE: Shape, Logos, Textures, Colors, and Proportions EXACTLY.`);
+                promptParts.push(`- Do NOT morph, distort, or reimagine the object's features. Only change lighting and environment.`);
+
                 // STEP 1: ANALYSIS
                 promptParts.push(`**STEP 1: VISUAL ANALYSIS (INTERNAL)**`);
                 promptParts.push(`- Analyze the input "Object" (${itemType}). Identify material (velvet, glass, flowers), lighting direction, and perspective.`);
@@ -1586,10 +1622,15 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                 // Automatic Camera Angle Guidance (Since User Control is Removed)
                 promptParts.push(`- **CAMERA ANGLE:** Choose the most aesthetic, professional angle for this specific object (e.g., slightly High Angle for trays, Eye Level for bouquets).`);
 
-                // Composition
+                // Composition & Safe Zones for Cropping
                 let layoutIntent = "Center composition.";
-                if (config.ImageLayout.value.includes('9:16')) layoutIntent = "Vertical Portrait (9:16), ample headspace. IMPORTANT: Subject MUST be centered horizontally.";
-                if (config.ImageLayout.value.includes('4:3')) layoutIntent = "Horizontal Landscape (4:3), wide framing. IMPORTANT: Subject MUST be centered vertically.";
+                if (config.ImageLayout.value.includes('9:16')) {
+                    layoutIntent = "Vertical Portrait (9:16) Intention. GENERATE A SQUARE IMAGE, BUT visualize the subject within a central vertical 9:16 strip (Safe Zone). Leave the sides empty/background so cropping to 9:16 preserves the whole subject.";
+                } else if (config.ImageLayout.value.includes('4:3')) {
+                    layoutIntent = "Horizontal Landscape (4:3) Intention. Keep subject within the central 4:3 area so cropping top/bottom works.";
+                } else if (config.ImageLayout.value.includes('3:4')) {
+                    layoutIntent = "Vertical Portrait (3:4) Intention. Keep subject within central 3:4 area.";
+                }
                 promptParts.push(`- **COMPOSITION:** ${layoutIntent}`);
 
                 // --- USER MANDATORY OVERRIDE ---
@@ -1645,10 +1686,8 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
     return (
         <form onSubmit={handleSubmit} className="flex flex-col gap-6 p-4 md:p-6">
             <div className="flex justify-between items-center mb-4">
-                 <h2 className="text-3xl font-bold" style={{ color: colors.text }}>Magic Photo Studio</h2>
-                 <button type="button" onClick={handleAutoFill} className="flex items-center gap-2 px-4 py-2 rounded-full text-white text-sm font-bold shadow-md hover:shadow-lg transition transform hover:scale-105" style={{ background: `linear-gradient(90deg, ${colors.accent} 0%, ${colors.supporting} 100%)` }}>
-                    <Sparkles className="w-4 h-4" /> AI Auto Fill
-                </button>
+                 {/* PERBAIKAN: Header Center Align */}
+                 <h2 className="text-3xl font-bold w-full text-center" style={{ color: colors.text }}>Magic Photo Studio</h2>
             </div>
 
             {/* 1. Upload & Item Type */}
@@ -1670,6 +1709,13 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                     </div>
                 </div>
             </section>
+
+             {/* PERBAIKAN: Tombol AI Auto Fill dipindah kesini (setelah upload barang) */}
+             <div className="flex justify-end">
+                <button type="button" onClick={handleAutoFill} className="flex items-center gap-2 px-4 py-2 rounded-full text-white text-sm font-bold shadow-md hover:shadow-lg transition transform hover:scale-105" style={{ background: `linear-gradient(90deg, ${colors.accent} 0%, ${colors.supporting} 100%)` }}>
+                    <Sparkles className="w-4 h-4" /> AI Auto Fill
+                </button>
+            </div>
 
             {/* 2. Style & Context */}
             <section className="p-5 rounded-xl bg-white shadow-md border-t-4" style={{ borderColor: colors.supporting }}>
@@ -1799,12 +1845,12 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
             <div className="w-full md:w-2/3 lg:w-1/2 mx-auto h-14">
                 {isGenerating ? (
                     <div className="flex justify-center items-center h-full rounded-full gap-3">
-                         <div className="w-6 h-6 border-4 border-t-transparent border-gray-400 rounded-full animate-spin"></div>
+                         <svg className="animate-spin h-10 w-10" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke={colors.primary} strokeWidth="4" fill="none" className="opacity-25" /><path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill={colors.secondary} /></svg>
                          <span className="text-gray-500 font-bold animate-pulse">Menganalisa & Mengolah...</span>
                     </div>
                 ) : (
                     <button type="submit" disabled={magicItem.length === 0} className={`w-full py-3 px-8 text-lg font-bold text-white rounded-full transition-all duration-300 shadow-xl h-full flex items-center justify-center gap-2 ${magicItem.length === 0 ? 'opacity-60 cursor-not-allowed' : 'hover:scale-[1.02] hover:shadow-2xl'}`} style={{ background: `linear-gradient(90deg, ${colors.secondary} 0%, ${colors.primary} 100%)` }}>
-                        <Wand2 className="w-5 h-5" /> Generate Magic Photos
+                        Generate Magic Photos
                     </button>
                 )}
             </div>
@@ -1842,9 +1888,11 @@ const MagicPhotoResults = ({ results, isLoading, colors }) => {
             } else {
                 // If aiming for 9:16 (tall), width is limiting factor usually if source is square
                 if (width / height > ratio) {
+                    // Source wider than target
                     newHeight = height;
                     newWidth = height * ratio;
                 } else {
+                    // Source taller than target
                     newWidth = width;
                     newHeight = width / ratio;
                 }
@@ -1859,10 +1907,8 @@ const MagicPhotoResults = ({ results, isLoading, colors }) => {
             
             ctx.drawImage(img, startX, startY, newWidth, newHeight, 0, 0, newWidth, newHeight);
             
-            const link = document.createElement('a');
-            link.download = `Magic-Photo-${index + 1}-${Date.now()}.png`;
-            link.href = canvas.toDataURL('image/png');
-            link.click();
+            // PERBAIKAN DOWNLOAD: Gunakan safeDownload
+            safeDownload(canvas.toDataURL('image/png'), `Magic-Photo-${index + 1}-${Date.now()}.png`);
         };
     };
 
@@ -1900,17 +1946,20 @@ const MagicPhotoResults = ({ results, isLoading, colors }) => {
             {selectedItem && (
                 <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setSelectedItem(null)}>
                     <button className="absolute top-4 right-4 text-white p-2 z-50"><X className="w-8 h-8" /></button>
-                    {/* CONTAINER MENGIKUTI ASPECT RATIO YANG DIPILIH DENGAN TEGAS */}
+                    {/* CONTAINER MENGIKUTI ASPECT RASIO YANG DIPILIH DENGAN TEGAS */}
+                    {/* Menggunakan div luar untuk membatasi ukuran layar, dan div dalam untuk memaksa rasio */}
                     <div 
-                        className={`relative w-full max-h-[85vh] max-w-3xl overflow-hidden rounded-lg shadow-2xl flex items-center justify-center bg-black ${getAspectRatioClass(selectedItem.layout)}`} 
+                        className="relative w-full h-full max-h-[90vh] max-w-[90vw] flex items-center justify-center p-4"
                         onClick={(e) => e.stopPropagation()}
                     >
-                         <img 
-                            src={selectedItem.image} 
-                            alt="Full View" 
-                            className="w-full h-full object-cover" 
-                            style={{ objectFit: 'cover' }} // Memaksa gambar mengisi container rasio (crop visual)
-                         />
+                        <div className={`shadow-2xl rounded-xl overflow-hidden max-w-full max-h-full ${getAspectRatioClass(selectedItem.layout)}`} style={{ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '100%' }}>
+                             <img 
+                                src={selectedItem.image} 
+                                alt="Full View" 
+                                className="w-full h-full object-cover" 
+                                style={{ objectFit: 'cover' }} 
+                             />
+                        </div>
                     </div>
                 </div>
             )}
@@ -2000,15 +2049,39 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
         if (containerBase64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: containerBase64 } });
         decorBase64List.forEach((b64) => { if (b64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: b64 } }); });
 
+        // CHAIN OF THOUGHT PROMPT UPDATED
         const strictPrompt = `
-        **PHOTOREALISTIC PRODUCT VISUALIZATION**
-        1. **SOURCE MATERIAL:** The uploaded images define the EXACT items. PRESERVE DETAILS (logos, textures).
-        2. **CONTAINER:** ${containerRef ? 'Use uploaded container reference strictly.' : `Use a ${container} as base.`}
-        3. **PRESETS:** Theme: ${theme}, Style: ${style}, Palette: ${colorPaletteName}, Culture: ${culture}.
-        4. **CONSTRAINTS:** All items must fit inside. No spilling.
-        5. **ENVIRONMENT:** Background: Single Draped Fabric. Color: ${background}. Camera: Eye Level.
-        6. **OUTPUT:** Full Frame 1:1. Center composition.
-        Detail: ${allPresets.otherDetail || 'None'}
+        **SYSTEM ROLE: ELITE PRODUCT STYLIST & PHOTOGRAPHER**
+        **TASK: DEEP VISUAL ANALYSIS & HANTARAN ARRANGEMENT GENERATION**
+
+        **INPUT ANALYSIS (CHAIN OF THOUGHT PROCESS):**
+        1.  **Visual Audit of Source Material:** - Analyze the uploaded "Hantaran Items" images carefully. Identify the material (e.g., velvet, gold, food, fabric?), exact colors, textures, and shape. 
+            - *CRITICAL:* The visual identity of these items must be preserved in the final output. Do not hallucinate different items.
+        
+        2.  **Container & Structure Analysis:** - The user selected container: "${container}". 
+            - ${containerRef ? "A specific reference image was provided for the container. Analyze its shape, transparency, and material properties." : "Use a standard, high-end commercial version of this container type."}
+        
+        3.  **Design Language & Preset Integration:**
+            - **Theme:** ${theme}
+            - **Style:** ${style}
+            - **Cultural Nuance:** ${culture}
+            - **Color Palette:** ${colorPaletteName} (Ensure this harmonizes with the items)
+            - **Arrangement Logic:** ${itemArrangement}
+            - **Prop Density:** ${propDensity}
+            - **Key Decoration:** ${decorElement}
+
+        4.  **Synthesis & Composition Strategy:** - Mentally place the "Hantaran Items" into the "${container}" using the "${itemArrangement}" layout. 
+            - Apply decoration elements (${decorElement}) consistent with the "${theme}" theme and "${culture}" culture. 
+            - Ensure the "${propDensity}" is respected (don't overcrowd if 'Minimalist', don't leave empty if 'High Density').
+            - Harmonize the background (${background}) with the palette.
+
+        **FINAL GENERATION DIRECTIVE:**
+        Create a single, high-definition (8k), photorealistic image based on the synthesis above.
+        - **Subject:** The fully arranged Hantaran box containing the user's items.
+        - **Environment:** ${background} single draped fabric background. Professional studio lighting (Softbox) to create depth and elegant reflections.
+        - **Camera:** Eye-level or slightly high-angle (45 degrees) to show contents clearly.
+        - **Constraint:** NO spilling outside the container (unless 'Overflowing' density is set). NO text overlays.
+        - **Detail Override:** ${allPresets.otherDetail || 'None'}
         `;
         imageParts.unshift({ text: strictPrompt });
 
@@ -2120,7 +2193,8 @@ const ArrangementIdeaResults = ({ results, isLoading, colors }) => {
 
     const handleDownloadCanvas = () => {
         if (canvasRef.current) {
-            const link = document.createElement('a'); link.download = `Hantaran-Studio-${Date.now()}.png`; link.href = canvasRef.current.toDataURL('image/png'); link.click();
+            // PERBAIKAN DOWNLOAD: Gunakan safeDownload
+            safeDownload(canvasRef.current.toDataURL('image/png'), `Hantaran-Studio-${Date.now()}.png`);
         }
     };
 
@@ -2176,16 +2250,25 @@ const App = () => {
   return (
     <div className="flex h-screen overflow-hidden" style={{ backgroundColor: colors.bg, color: colors.text }}>
       <nav className={`fixed md:relative flex flex-col h-full shadow-xl transition-all duration-300 z-50 ${isSidebarOpen ? 'w-64 p-4' : 'w-0 p-0 md:w-16 md:p-2'}`} style={{ borderTopRightRadius: '1.5rem', borderBottomRightRadius: '1.5rem', backgroundColor: colors.primary }}>
-        <div className={`flex ${isSidebarOpen ? 'flex-col items-start gap-4' : 'justify-center'} items-center mb-6 h-12`}>
+        {/* PERBAIKAN: Set overflow-y-auto menjadi overflow-hidden dan menggunakan flex-col untuk kontrol layout */}
+        <div className={`flex ${isSidebarOpen ? 'flex-col items-start gap-4' : 'justify-center'} items-center mb-4 h-12 pb-4 border-b border-white/30`}>
           {isSidebarOpen && (
             <div className="flex items-center w-full justify-between">
-              <div className="flex items-center gap-3"><img src={APP_LOGO_URL} className="w-10 h-10" /><h1 className="text-xl text-white flex flex-col leading-none"><span style={{ fontFamily: 'Georgia, serif', fontWeight: 'bold' }}>HANTARAN</span><span className="text-xs uppercase font-bold" style={{ opacity: 0.8 }}>STUDIO</span></h1></div>
+              <div className="flex items-center gap-3">
+                <img src={APP_LOGO_URL} className="w-12 h-12" alt="App Logo" /> {/* Logo Lebih Besar */}
+                <h1 className="text-xl text-white flex flex-col leading-none">
+                  <span style={{ fontFamily: 'Georgia, serif', fontWeight: 'bold' }}>HANTARAN</span>
+                  <span className="text-xs uppercase font-bold" style={{ opacity: 0.8 }}>STUDIO</span>
+                </h1>
+              </div>
               <button onClick={toggleSidebar} className="p-2 rounded-full hover:bg-white/20 text-white"><X className="w-6 h-6" /></button>
             </div>
           )}
            {!isSidebarOpen && <button onClick={toggleSidebar} className="p-2 rounded-full hover:bg-white/20 text-white"><PanelRight className="w-6 h-6" /></button>}
         </div>
-        <ul className="flex flex-col gap-2">
+
+        {/* Daftar Modul: Menghapus scrollbar dengan overflow-hidden */}
+        <ul className="flex flex-col gap-2 flex-1 pb-4 border-b border-white/30 overflow-hidden">
           {MODULES.map(module => (
             <li key={module.id}>
               <button onClick={() => { if (!module.disabled) setActiveModule(module.id); if (window.innerWidth < 768) setIsSidebarOpen(false); }} disabled={module.disabled} className={`flex items-center w-full px-4 py-3 rounded-xl transition-all duration-300 relative font-bold ${activeModule === module.id ? 'bg-white shadow-lg scale-[1.01]' : 'text-white hover:bg-white/20'}`} style={{ color: activeModule === module.id ? colors.text : 'white' }}>
@@ -2195,7 +2278,9 @@ const App = () => {
             </li>
           ))}
         </ul>
-        <div className="mt-auto pt-6 border-t border-white/30 flex justify-center p-3">
+        
+        {/* Footer Sidebar */}
+        <div className="mt-auto pt-4 flex justify-center p-3">
              {isSidebarOpen ? <div className="flex items-center gap-3"><CircleUser className="w-6 h-6 text-white" /><div className="text-sm text-white"><p className="text-xs opacity-80">Developed by</p><p className="font-bold">NGATUR BISNIS</p></div></div> : <CircleUser className="w-6 h-6 text-white" />}
         </div>
       </nav>
