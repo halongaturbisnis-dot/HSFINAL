@@ -13,7 +13,7 @@ import {
 const colors = {
   bg: '#F9E6E6',
   primary: '#A8C3A0',
-  secondary: '#D8A7A7',
+  secondary: '#D8A7A7', // Warna ini akan digunakan untuk tombol close merah
   supporting: '#B8A58C',
   text: '#3C3C3C',
   accent: '#D4AF37',
@@ -116,7 +116,7 @@ const PRESET_OPTIONS = {
       Binding: [
           "Satin Ribbon Bow (Pita Satin)", "Raw Silk Ribbon (Pita Sutra Kasar)",
           "Jute Rope / Burlap (Tali Goni/Goni)", "Velvet Ribbon (Pita Beludru)",
-          "Lace Wrapping (Renda)", "Hidden Binding (Tersembunyi)"
+          "Lace Wrapping (Renda)", "Hidden Binding (Tersembunbyi)"
       ],
       Wrapper: [
           "Korean Paper (Kertas Waterproof Warna-warni)", "Kraft Paper (Coklat Rustic)",
@@ -210,6 +210,37 @@ const safeDownload = (dataUrl, filename) => {
         // Fallback: Buka di tab baru jika download gagal
         window.open(dataUrl, '_blank');
     }
+};
+
+// Helper function for fetching with retry logic
+const fetchWithRetry = async (url, options, maxRetries = 3) => {
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const response = await fetch(url, options);
+            if (response.ok) return response;
+            if (response.status === 429 || response.status >= 500) {
+                if (i === maxRetries - 1) throw new Error(`API call failed after ${maxRetries} retries: ${response.statusText}`);
+                // Exponential backoff
+                await delay(Math.pow(2, i) * 1000); continue;
+            }
+            throw new Error(`API error: ${response.statusText}`);
+        } catch (error) {
+            if (i === maxRetries - 1) throw error;
+            // Exponential backoff for network errors
+            await delay(Math.pow(2, i) * 1000);
+        }
+    }
+};
+
+// Helper to fetch data URL and convert it to base64 data string AND extract MIME type
+// PERBAIKAN: Fungsi ini diubah untuk mengembalikan B64 dan MIME Type secara dinamis.
+const parseDataURL = (dataUrl) => {
+    if (!dataUrl || !dataUrl.startsWith('data:')) return { base64: null, mimeType: null };
+    const parts = dataUrl.split(',');
+    const metadata = parts[0].split(';');
+    const mimeType = metadata[0].replace('data:', '');
+    return { base64: parts[1], mimeType: mimeType || 'image/png' }; // Default ke PNG (karena output Gemini Image selalu PNG)
 };
 
 // --- KOMPONEN UI DASAR ---
@@ -322,6 +353,7 @@ const SkeletonGrid = ({ primaryColor, secondaryColor }) => (
         {[1, 2].map(i => (
              <div key={i} className="aspect-square rounded-xl animate-pulse" style={{ backgroundColor: secondaryColor + '20' }}>
                  <div className="w-full h-full flex items-center justify-center opacity-20">
+                     {/* FIX: Error pada baris 356. Icon JSX harus ditutup dengan '/' */}
                      <ImageIcon className="w-8 h-8" style={{ color: primaryColor }} />
                  </div>
              </div>
@@ -335,6 +367,407 @@ const renderProTips = (text) => {
     safeText = safeText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     return (
         <p className="font-normal leading-relaxed text-justify" dangerouslySetInnerHTML={{ __html: safeText }} />
+    );
+};
+
+// --- KOMPONEN BARU: IMAGE BRUSH OVERLAY UNTUK EDIT LANJUTAN ---
+
+// Utility to create a black/white mask image from a drawn canvas (used by the API)
+const createApiMask = (drawingCanvas) => {
+    if (!drawingCanvas) return null;
+    
+    const w = drawingCanvas.width;
+    const h = drawingCanvas.height;
+    
+    // 1. Create a temporary canvas for the final API mask
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = w;
+    maskCanvas.height = h;
+    const ctx = maskCanvas.getContext('2d');
+    
+    // 2. Get pixel data from the user's drawing
+    const drawingCtx = drawingCanvas.getContext('2d');
+    const drawingData = drawingCtx.getImageData(0, 0, w, h);
+    const apiMaskData = ctx.createImageData(w, h); // Start with a new, blank image data
+    
+    // Mask convention: Black (RGB 0,0,0) = Area to EDIT/CHANGE. White (RGB 255,255,255) = Area to KEEP.
+    for (let i = 0; i < drawingData.data.length; i += 4) {
+        // Check the alpha channel (drawingData.data[i + 3]) of the drawing canvas.
+        // If the alpha is high (i.e., the user drew something), make the mask pixel black.
+        if (drawingData.data[i + 3] > 0) {
+            // Area drawn on -> set to BLACK (0, 0, 0)
+            apiMaskData.data[i] = 0;       // R
+            apiMaskData.data[i + 1] = 0;   // G
+            apiMaskData.data[i + 2] = 0;   // B
+            apiMaskData.data[i + 3] = 255; // A (Fully Opaque Black)
+        } else {
+            // Area not drawn on -> set to WHITE (255, 255, 255)
+            apiMaskData.data[i] = 255;     // R
+            apiMaskData.data[i + 1] = 255; // G
+            apiMaskData.data[i + 2] = 255; // B
+            apiMaskData.data[i + 3] = 255; // A (Fully Opaque White)
+        }
+    }
+    
+    ctx.putImageData(apiMaskData, 0, 0);
+    
+    // Return the Base64 representation of the mask image
+    return maskCanvas.toDataURL('image/png');
+};
+
+
+const ImageBrushOverlay = ({ imageUrl, onMaskChange, colors, isProcessing }) => {
+    const canvasRef = useRef(null);
+    const imgRef = useRef(null);
+    const [isDrawing, setIsDrawing] = useState(false);
+    const [brushSize, setBrushSize] = useState(25);
+    const [hasDrawn, setHasDrawn] = useState(false);
+    const brushColor = colors.secondary; // Use secondary color (pink/red) for visibility
+
+    // Initial setup and clear logic
+    const setupCanvas = useCallback(() => {
+        const canvas = canvasRef.current;
+        const img = imgRef.current;
+        if (!canvas || !img || img.naturalWidth === 0) return;
+
+        // Set canvas size to match the displayed image size
+        canvas.width = img.width;
+        canvas.height = img.height;
+
+        const ctx = canvas.getContext('2d');
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = brushColor;
+        
+        // Clear the canvas and internal mask state
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        onMaskChange(null);
+        setHasDrawn(false);
+    }, [brushColor, onMaskChange]);
+
+    useEffect(() => {
+        setupCanvas();
+        // Re-setup when image loads or dimensions change (simulated by dependency)
+        const handler = setTimeout(setupCanvas, 100);
+        return () => clearTimeout(handler);
+    }, [imageUrl, setupCanvas]);
+
+    // Function to calculate coordinates relative to the canvas
+    const getPos = (e) => {
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+            x: clientX - rect.left,
+            y: clientY - rect.top
+        };
+    };
+
+    // Drawing handlers
+    const startDrawing = (e) => {
+        if (isProcessing) return;
+        setIsDrawing(true);
+        setHasDrawn(true);
+        const pos = getPos(e);
+        const ctx = canvasRef.current.getContext('2d');
+        ctx.lineWidth = brushSize;
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+    };
+
+    const draw = (e) => {
+        if (!isDrawing || isProcessing) return;
+        e.preventDefault(); // Prevent scrolling on touch
+        const pos = getPos(e);
+        const ctx = canvasRef.current.getContext('2d');
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+    };
+
+    const stopDrawing = () => {
+        if (isDrawing) {
+            setIsDrawing(false);
+            // After drawing stops, generate the API mask and pass it up
+            const maskDataUrl = createApiMask(canvasRef.current);
+            onMaskChange(maskDataUrl);
+        }
+    };
+    
+    // Clear Handler
+    const handleClear = (e) => {
+        e.stopPropagation();
+        setupCanvas(); // Clears the canvas and resets mask state
+    };
+    
+    const BrushIcon = PenTool;
+
+    return (
+        <div className="relative w-full aspect-square">
+            {/* 1. Original Image (Hidden, but used for ref measurement) */}
+            <img 
+                ref={imgRef} 
+                src={imageUrl} 
+                alt="Original" 
+                className="w-full h-full object-contain rounded-lg border-4 shadow-inner" 
+                style={{ borderColor: colors.supporting }} 
+                onLoad={() => {
+                     // Ensure canvas is setup after image loads and is measured
+                     setupCanvas();
+                     setHasDrawn(false); // Reset drawing state on new image load
+                }}
+                crossOrigin="anonymous" // Penting untuk mencegah error CORS saat canvas membaca data gambar
+            />
+
+            {/* 2. Drawing Canvas Overlay */}
+            <canvas
+                ref={canvasRef}
+                className="absolute top-0 left-0 cursor-crosshair touch-none mix-blend-multiply opacity-80"
+                style={{ 
+                    border: `4px solid ${colors.supporting}`, 
+                    borderRadius: '0.5rem', 
+                    width: '100%', 
+                    height: '100%', 
+                    // Menggunakan warna sekunder sebagai warna brush
+                    strokeStyle: brushColor,
+                }}
+                onMouseDown={startDrawing}
+                onMouseMove={draw}
+                onMouseUp={stopDrawing}
+                onMouseLeave={stopDrawing}
+                onTouchStart={startDrawing}
+                onTouchMove={draw}
+                onTouchEnd={stopDrawing}
+            />
+            
+            {/* 3. Controls */}
+            <div className="absolute top-2 right-2 flex flex-col items-end space-y-2">
+                 {/* Brush Size Slider */}
+                 <div className="flex items-center space-x-2 p-2 bg-black/40 backdrop-blur rounded-full shadow-lg">
+                    <BrushIcon className="w-4 h-4 text-white" />
+                    <input 
+                        type="range" 
+                        min="5" 
+                        max="80" 
+                        value={brushSize} 
+                        onChange={(e) => setBrushSize(parseInt(e.target.value))} 
+                        className="w-20 h-1 bg-gray-300 rounded-full cursor-pointer appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:rounded-full"
+                        style={{'--tw-ring-color': brushColor, backgroundColor: colors.supporting, '--tw-ring-offset-width': '1px', WebkitAppearance: 'none', MozAppearance: 'none'}}
+                    />
+                </div>
+                
+                {/* Clear Button */}
+                {hasDrawn && (
+                    <button 
+                        onClick={handleClear} 
+                        className="p-2 bg-red-500/80 text-white rounded-full shadow-lg hover:bg-red-600 transition flex items-center gap-1 text-xs font-semibold"
+                        title="Hapus Masking"
+                    >
+                         <Eraser className="w-4 h-4" /> Clear
+                    </button>
+                )}
+            </div>
+            
+            {/* 4. Help Text */}
+            <div className="absolute bottom-2 left-2 text-[10px] text-white/80 p-1 bg-black/40 backdrop-blur rounded-lg">
+                Gunakan kursor/jari untuk menandai area yang ingin diubah.
+            </div>
+        </div>
+    );
+};
+
+// --- KOMPONEN RE-EDIT MODAL (Dengan Brush) ---
+
+const ReEditModal = ({ isOpen, onClose, originalItem, onUpdateImage, colors }) => {
+    // originalItem structure: { image: dataURL, index: number, layout: string (optional) }
+    const [newPrompt, setNewPrompt] = useState('');
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [maskDataURL, setMaskDataURL] = useState(null); // NEW: State for the mask
+
+    if (!isOpen || !originalItem) return null;
+
+    const handleRegenerate = async () => {
+        if (!newPrompt.trim() || isProcessing) return;
+
+        setIsProcessing(true);
+
+        try {
+            // PERBAIKAN: Menggunakan parseDataURL untuk mendapatkan B64 dan MIME Type
+            const { base64: imageB64, mimeType: inputMimeType } = parseDataURL(originalItem.image);
+            
+            if (!imageB64) throw new Error("Gagal memproses gambar asli.");
+
+            // --- STRUKTUR PROMPT DENGAN PENAMBAHAN MASKING INFO ---
+            const editPrompt = `
+                **SYSTEM INSTRUCTION: ROBUST IMAGE RE-EDIT & CHAIN OF THOUGHT (CoT)**
+                Anda adalah CGI Artist dan Photo Retoucher level elite. Tugas Anda adalah melakukan re-edit pada gambar yang dilampirkan. 
+                ${maskDataURL ? 
+                    "JIKA MASKING ADA: Fokuskan perubahan Anda HANYA pada area hitam yang ditunjukkan oleh gambar mask. Area putih harus dipertahankan 100%." : 
+                    "JIKA TIDAK ADA MASKING: Lakukan edit pada seluruh gambar sesuai instruksi pengguna, dengan memprioritaskan konsistensi objek utama."
+                }
+
+                **KRITERIA KEBERHASILAN (NON-NEGOTIABLE):**
+                1.  **Stabilitas Identitas:** Jaga identitas objek utama (Hantaran/Mahar/Buket) agar 100% konsisten. JANGAN mengubah bentuk, logo, atau tekstur, kecuali diminta secara eksplisit.
+                2.  **Presisi Edit:** HANYA ubah elemen yang diminta dalam instruksi pengguna. JANGAN sentuh bagian lain (misalnya, jika diminta mengganti bunga, jangan ubah latar belakang atau pencahayaan, kecuali instruksi pengguna memintanya).
+                3.  **Kualitas:** Output harus 8k, photorealistic, dengan pencahayaan studio profesional.
+
+                **CHAIN OF THOUGHT (CoT) - ANALISIS & RENCANA EKSEKUSI:**
+                
+                **1. Analisis Gambar Asli:**
+                - Objek Utama: Identifikasi subjek (misalnya, Kotak Akrilik, Buket Mawar Merah).
+                - Latar Belakang & Komposisi: Deskripsikan latar belakang dan rasio aspek gambar.
+                
+                **2. Analisis Instruksi Pengguna:**
+                - Instruksi: "${newPrompt.trim()}"
+                - Target Perubahan: Identifikasi secara spesifik elemen yang akan diubah (misalnya, Bunga diganti, Warna latar belakang diubah).
+                
+                **3. Rencana Komposisi & Rendering:**
+                - Aksi Utama: Tentukan langkah teknis yang diperlukan (misalnya, Inpainting pada area mask untuk mengganti bunga).
+                - Validasi Kriteria: Pastikan rencana ini memenuhi semua KRITERIA KEBERHASILAN.
+
+                **INSTRUKSI GENERASI AKHIR (Final Output Instruction):**
+                Berdasarkan analisis CoT di atas, hasilkan satu gambar baru yang **SECARA AKURAT** menggabungkan gambar asli dengan perubahan spesifik dari instruksi pengguna.
+            `;
+            // --- END PROMPT ---
+
+            // --- PEMBANGUNAN PAYLOAD API (TIGA PART) ---
+            const contents = [{
+                role: "user",
+                parts: [
+                    { text: editPrompt },
+                    // Part 1: Original Image
+                    { inlineData: { mimeType: inputMimeType || "image/png", data: imageB64 } }
+                ]
+            }];
+
+            // Part 3: Mask Image (Jika ada goresan)
+            if (maskDataURL) {
+                const parsedMask = parseDataURL(maskDataURL);
+                const maskBase64 = parsedMask.base64;
+                if (maskBase64) {
+                    contents[0].parts.push({
+                        // Mime type for mask image is always png
+                        inlineData: { mimeType: 'image/png', data: maskBase64 } 
+                    });
+                }
+            }
+
+            const apiKey = "";
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
+
+            const response = await fetchWithRetry(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: contents, // Gunakan contents yang sudah dimodifikasi
+                    generationConfig: { responseModalities: ['IMAGE'] }
+                })
+            });
+
+            if (!response.ok) throw new Error("API call failed.");
+
+            const result = await response.json();
+            const candidate = result?.candidates?.[0];
+
+            if (!candidate) {
+                console.error("API Response Result:", result);
+                throw new Error("API tidak mengembalikan kandidat gambar.");
+            }
+
+            const finishReason = candidate.finishReason;
+
+            if (finishReason === 'SAFETY') {
+                throw new Error("Generasi diblokir karena kebijakan keamanan. Coba ubah prompt.");
+            }
+            if (finishReason === 'RECITATION') {
+                throw new Error("Generasi diblokir karena potensi duplikasi konten. Coba prompt yang berbeda.");
+            }
+             // Check for general failure reasons other than STOP (successful) or MAX_TOKENS (can happen, but often means the image part is missing)
+            if (finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') { 
+                throw new Error(`Generasi gagal dengan alasan: ${finishReason}`);
+            }
+
+            const newBase64 = candidate?.content?.parts?.[0]?.inlineData?.data;
+
+            if (!newBase64) {
+                 throw new Error("Gambar baru tidak ditemukan. Coba lagi dengan prompt yang lebih sederhana atau ganti gambar sumber.");
+            }
+
+            const newImageUrl = `data:image/png;base64,${newBase64}`;
+            
+            // Call the callback to update the parent state
+            onUpdateImage(originalItem.index, newImageUrl, originalItem.layout);
+            
+            setNewPrompt('');
+            setMaskDataURL(null); // Clear mask state on success
+            onClose(); // Close on success
+
+        } catch (error) {
+            console.error("Regenerate failed:", error);
+            alert(`Gagal meregenerasi gambar: ${error.message}.`);
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm" onClick={isProcessing ? undefined : onClose}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl p-6" onClick={(e) => e.stopPropagation()}>
+                <div className="flex justify-between items-center border-b pb-3 mb-4">
+                    <h3 className="text-xl font-bold flex items-center gap-2" style={{ color: colors.text }}>
+                        <Wand2 className="w-5 h-5" style={{ color: colors.accent }} /> Edit Gambar Lanjutan
+                    </h3>
+                    {!isProcessing && <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-1"><X className="w-6 h-6" /></button>}
+                </div>
+
+                <div className="flex flex-col md:flex-row gap-6">
+                    {/* Kolom Kiri: Image Brush Overlay */}
+                    <div className="w-full md:w-1/2 flex flex-col items-center">
+                        <p className="text-sm font-semibold mb-2 flex items-center gap-1">
+                            <PenTool className="w-4 h-4 text-gray-500"/> Gambar Asli ({originalItem.index + 1}) - Tandai area yang ingin diedit
+                        </p>
+                        <ImageBrushOverlay
+                            imageUrl={originalItem.image}
+                            onMaskChange={setMaskDataURL}
+                            colors={colors}
+                            isProcessing={isProcessing}
+                        />
+                         {maskDataURL && (
+                            <div className="mt-2 text-xs text-green-600 flex items-center gap-1">
+                                <CheckSquare className="w-3 h-3"/> Masking aktif. AI akan fokus pada area yang ditandai.
+                            </div>
+                         )}
+                    </div>
+                    
+                    {/* Kolom Kanan: Prompt Input */}
+                    <div className="w-full md:w-1/2 space-y-4">
+                        <OpenTextarea 
+                            value={newPrompt} 
+                            onChange={(e) => setNewPrompt(e.target.value)} 
+                            placeholder={`Masukkan instruksi edit lanjutan di sini. 
+Contoh: 'Ganti bunga menjadi mawar ungu tua' atau 'Tambahkan cahaya hangat dari samping.' 
+(Jika Anda menandai area dengan kuas, AI akan memprioritaskan perubahan di area tersebut)`}
+                            disabled={isProcessing}
+                        />
+
+                        {isProcessing ? (
+                            <div className="flex items-center justify-center py-3 px-6 rounded-full text-white font-bold transition-all duration-300 shadow-lg" style={{ background: `linear-gradient(90deg, ${colors.primary} 0%, ${colors.supporting} 100%)` }}>
+                                <svg className="animate-spin h-5 w-5 mr-3" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" className="text-white opacity-25" /><path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill="currentColor" /></svg>
+                                Sedang Meregenerasi...
+                            </div>
+                        ) : (
+                            <button 
+                                onClick={handleRegenerate}
+                                disabled={!newPrompt.trim()}
+                                className={`w-full py-3 px-6 rounded-full text-white font-bold transition-all duration-300 shadow-lg flex items-center justify-center gap-2 ${!newPrompt.trim() ? 'opacity-60 cursor-not-allowed' : 'hover:scale-[1.02] hover:shadow-xl'}`} 
+                                style={{ background: `linear-gradient(90deg, ${colors.secondary} 0%, ${colors.primary} 100%)` }}
+                            >
+                                <Wand2 className="w-5 h-5" /> Regenerate Gambar Ini
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
     );
 };
 
@@ -634,7 +1067,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                                             min="1"
                                             className="w-full p-2 text-sm border rounded bg-white text-center"
                                             value={item.qty}
-                                            onChange={(e) => handleUpdateItem(item.id, 'qty', e.target.value)}
+                                            onChange={(e) => handleUpdateItem(item.id, 'qty', parseInt(e.target.value) || 0)}
                                         />
                                     </div>
                                 </div>
@@ -652,7 +1085,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                                     </div>
                                     
                                     {item.photos.length > 0 ? (
-                                        <div className="grid grid-cols-2 gap-3">
+                                        <div className="grid grid-cols-3 gap-2 mt-2">
                                             {item.photos.map((photo, pIdx) => (
                                                 <div key={pIdx} className="relative border rounded-lg overflow-hidden bg-gray-50">
                                                     <div className="aspect-[4/3] w-full bg-gray-200 mb-1 overflow-hidden rounded-sm">
@@ -1062,52 +1495,76 @@ const FlowerBouquetForm = ({ onGenerate, isGenerating, colors }) => {
         e.preventDefault();
         onGenerate({ start: true });
 
-        // Generate Prompt
-        let prompt = `
-        **PROFESSIONAL FLORIST PHOTOGRAPHY - BOUQUET**
-        Generate a photorealistic, high-end 8k image of a Flower Bouquet.
-
-        **SPECIFICATIONS:**
-        `;
-        
-        Object.keys(bouquetConfig).forEach(key => {
-             const conf = bouquetConfig[key];
-             prompt += `- **${key}:** ${conf.isAuto ? "Creative & Aesthetic Choice" : conf.value}\n`;
-        });
-
-        prompt += `
-        **ENVIRONMENT:**
-        - **Background:** Soft, neutral studio background (light grey or cream) to highlight the flowers.
-        - **Lighting:** Soft natural window light.
-        - **Composition:** Centered, showing the full bouquet arrangement.
-
-        **QUALITY:** Sharp focus, vibrant colors, detailed textures of petals and wrapping paper.
-        `;
-
         const apiKey = ""; 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
 
         try {
-            const response = await fetch(url, { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' }, 
-                body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseModalities: ['IMAGE'] } }) 
+            // Cek apakah ada nilai spesifik yang dipilih pengguna (bukan auto dan bukan kosong)
+            const hasExplicitValue = Object.values(bouquetConfig).some(conf => !conf.isAuto && conf.value !== '');
+
+            const promises = [1, 2].map(async (i) => {
+                 // Generate Prompt for each variation
+                let prompt = `
+                **PROFESSIONAL FLORIST PHOTOGRAPHY - BOUQUET VARIATION ${i}**
+                Generate a photorealistic, high-end 8k image of a Flower Bouquet.
+
+                **SPECIFICATIONS:**
+                `;
+                
+                Object.keys(bouquetConfig).forEach(key => {
+                     const conf = bouquetConfig[key];
+                     prompt += `- **${key}:** ${conf.isAuto ? "Creative & Aesthetic Choice" : conf.value}\n`;
+                });
+
+                // --- FIX: Tambahkan fallback deskriptif jika tidak ada pilihan yang ditentukan ---
+                if (!hasExplicitValue) {
+                    prompt += `
+                    **FALLBACK STYLE (Since no explicit choice):** Design a sophisticated, elegant, hand-tied bridal bouquet. Use a combination of soft white and blush pink Peonies and Garden Roses, accented with abundant sage greenery. The binding must be a luxurious raw silk ribbon in a neutral tone. The wrapping should be minimalist and airy (Korean style paper).
+                    `;
+                }
+                // --- END FIX ---
+
+                prompt += `
+                **ENVIRONMENT:**
+                - **Background:** Soft, neutral studio background (light grey or cream) to highlight the flowers.
+                - **Lighting:** Soft natural window light.
+                - **Composition:** Centered, showing the full bouquet arrangement.
+
+                **QUALITY:** Sharp focus, vibrant colors, detailed textures of petals and wrapping paper.
+                `;
+
+                const response = await fetchWithRetry(url, { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseModalities: ['IMAGE'] } }) 
+                });
+
+                if (!response.ok) { console.error(`API response not OK for Bouquet var ${i}.`); return null; }
+
+                const result = await response.json();
+                const base64 = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+                
+                // FIX: Menambahkan pengecekan base64 dan logging finishReason
+                if (!base64) {
+                    const finishReason = result?.candidates?.[0]?.finishReason;
+                    const error = result?.error?.message || 'Unknown API failure.';
+                    console.error(`Bouquet gen failed for variation ${i}. Reason: ${finishReason || 'Missing Data'}. Error detail: ${error}. Response:`, result);
+                }
+                
+                return base64 ? `data:image/png;base64,${base64}` : null;
             });
-
-            if (!response.ok) throw new Error("Gagal membuat gambar buket.");
-
-            const result = await response.json();
-            const base64 = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
             
-            if (!base64) throw new Error("Gambar tidak ditemukan.");
+            const results = await Promise.all(promises);
+            const validImages = results.filter(r => r !== null);
 
-            const imageUrl = `data:image/png;base64,${base64}`;
-            onGenerate({ data: { images: [imageUrl] }, start: false });
+            if (validImages.length === 0) throw new Error("Gambar tidak ditemukan.");
+
+            onGenerate({ data: { images: validImages }, start: false });
 
         } catch (error) {
             console.error(error);
             onGenerate({ start: false });
-            alert("Terjadi kesalahan saat membuat buket.");
+            alert(`Terjadi kesalahan saat membuat buket: ${error.message}`);
         }
     };
 
@@ -1144,12 +1601,19 @@ const FlowerBouquetForm = ({ onGenerate, isGenerating, colors }) => {
     );
 };
 
-const FlowerBouquetResults = ({ results, isLoading, colors }) => {
+const FlowerBouquetResults = ({ results, isLoading, colors, setEditContext }) => {
+    // MODIFIKASI: Menggunakan struktur grid dan modal yang mirip dengan MaharDesignResults/MagicPhotoResults
     const images = results?.data?.images || [];
+    const [viewIndex, setViewIndex] = useState(0);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+
+    const handleDownload = (url, index) => {
+        safeDownload(url, `Bouquet-Var${index+1}-${Date.now()}.png`);
+    };
     
-    const handleDownload = (url) => {
-        // PERBAIKAN DOWNLOAD: Gunakan safeDownload untuk iOS
-        safeDownload(url, `Bouquet-${Date.now()}.png`);
+    // Fungsi untuk membuka modal edit
+    const handleEdit = (image, index) => {
+        setEditContext({ image, index, layout: '1:1 (Square)' }); // Layout default square
     };
 
     if (isLoading) return <div className="p-8 h-full flex flex-col justify-center"><SkeletonLoading primaryColor={colors.primary} secondaryColor={colors.secondary} bgColor={colors.bg} /></div>;
@@ -1163,16 +1627,80 @@ const FlowerBouquetResults = ({ results, isLoading, colors }) => {
     );
 
     return (
-        <div className="p-6 h-full flex flex-col items-center">
+        <div className="p-6 flex flex-col">
             <h2 className="text-2xl font-bold text-center mb-6" style={{ color: colors.text }}>Hasil Desain Buket</h2>
-            <div className="w-full max-w-md bg-white p-2 rounded-2xl shadow-xl border-4" style={{ borderColor: colors.primary }}>
-                 <img src={images[0]} alt="Bouquet Result" className="w-full h-auto rounded-xl" />
-                 <div className="mt-4 flex justify-center pb-2">
-                     <button onClick={() => handleDownload(images[0])} className="bg-gray-800 text-white px-6 py-2 rounded-full font-bold shadow-lg flex items-center gap-2 hover:bg-black transition">
-                        <Download className="w-4 h-4" /> Download
-                    </button>
-                 </div>
+            
+            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                {images.map((img, idx) => (
+                    <div key={idx} className="group relative aspect-square rounded-2xl overflow-hidden shadow-xl border-4 bg-white cursor-pointer transition duration-300" style={{ borderColor: idx === viewIndex ? colors.primary : 'transparent' }}>
+                        <img src={img} alt={`Bouquet ${idx+1}`} className="w-full h-full object-cover" />
+                         {/* Tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
+                            <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                            <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
+                        </div>
+                        <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
+                    </div>
+                ))}
             </div>
+
+            {isModalOpen && (
+                <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 backdrop-blur-md" onClick={() => setIsModalOpen(false)}>
+                    
+                    {/* Red Close Button */}
+                    <button 
+                        className="absolute top-4 right-4 p-2 z-50 rounded-full transition" 
+                        onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); }}
+                        style={{ backgroundColor: colors.secondary, color: 'white' }} 
+                    >
+                        <X className="w-8 h-8" />
+                    </button>
+                    
+                    {/* Previous Button (Slider) */}
+                    {images.length > 1 && (
+                        <button 
+                            className="absolute left-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={(e) => { e.stopPropagation(); setViewIndex(prev => prev === 0 ? images.length - 1 : prev - 1); }}
+                        >
+                            <ChevronLeft className="w-10 h-10" />
+                        </button>
+                    )}
+
+                    <div 
+                        className="max-w-3xl max-h-[85vh] relative group"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <img src={images[viewIndex]} alt="Full View" className="max-h-[85vh] w-auto object-contain rounded-lg shadow-2xl aspect-square" />
+                        <div className="absolute bottom-4 right-4 flex gap-3">
+                            {/* Tombol Download & Edit di Modal */}
+                             <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                                <Download className="w-4 h-4" /> Download
+                            </button>
+                            <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                                <Wand2 className="w-4 h-4" /> Edit
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Next Button (Slider) */}
+                    {images.length > 1 && (
+                        <button 
+                            className="absolute right-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={(e) => { e.stopPropagation(); setViewIndex(prev => (prev + 1) % images.length); }}
+                        >
+                            <ChevronRight className="w-10 h-10" />
+                        </button>
+                    )}
+
+                    {/* Index indicator */}
+                    <div className="absolute bottom-8 flex gap-2">
+                        {images.map((_, idx) => (
+                            <div key={idx} className={`w-2 h-2 rounded-full transition-all ${idx === viewIndex ? 'bg-white w-6' : 'bg-white/40'}`} />
+                        ))}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -1269,10 +1797,20 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
                 const apiKey = ""; 
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
                 
-                const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: "user", parts: imageParts }], generationConfig: { responseModalities: ['IMAGE'] } }) });
-                if (!response.ok) return null;
+                const response = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: "user", parts: imageParts }], generationConfig: { responseModalities: ['IMAGE'] } }) });
+                
+                // FIX: Menambahkan pengecekan base64 dan logging finishReason
+                if (!response.ok) { console.error(`API response not OK for Mahar var ${i}.`); return null; }
+                
                 const result = await response.json();
                 const base64 = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+                
+                if (!base64) {
+                    const finishReason = result?.candidates?.[0]?.finishReason;
+                    const error = result?.error?.message || 'Unknown API failure.';
+                    console.error(`Mahar gen failed for variation ${i}. Reason: ${finishReason || 'Missing Data'}. Error detail: ${error}. Response:`, result);
+                }
+                
                 return base64 ? `data:image/png;base64,${base64}` : null;
             });
 
@@ -1283,7 +1821,7 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
         } catch (error) {
             console.error(error);
             onGenerate({ start: false });
-            alert("Terjadi kesalahan saat membuat desain mahar.");
+            alert(`Terjadi kesalahan saat membuat desain mahar: ${error.message}`);
         }
     };
 
@@ -1351,15 +1889,20 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
     );
 };
 
-const MaharDesignResults = ({ results, isLoading, colors }) => {
-    // Reusing the structure from FlowerBouquetResults for consistency
+const MaharDesignResults = ({ results, isLoading, colors, setEditContext }) => {
+    // MODIFIKASI: Menggunakan style tombol hover MagicPhotoResults
     const images = results?.data?.images || [];
     const [viewIndex, setViewIndex] = useState(0);
     const [isModalOpen, setIsModalOpen] = useState(false);
 
-    const handleDownload = (url) => {
+    const handleDownload = (url, index) => {
         // PERBAIKAN DOWNLOAD: Gunakan safeDownload
-        safeDownload(url, `Mahar-${Date.now()}.png`);
+        safeDownload(url, `Mahar-Var${index+1}-${Date.now()}.png`);
+    };
+    
+    // Fungsi untuk membuka modal edit
+    const handleEdit = (image, index) => {
+        setEditContext({ image, index, layout: '1:1 (Square)' });
     };
 
     if (isLoading) return <div className="p-8 h-full flex flex-col justify-center"><SkeletonLoading primaryColor={colors.primary} secondaryColor={colors.secondary} bgColor={colors.bg} /></div>;
@@ -1378,38 +1921,70 @@ const MaharDesignResults = ({ results, isLoading, colors }) => {
             
             <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                 {images.map((img, idx) => (
-                    <div key={idx} className="group relative rounded-2xl overflow-hidden shadow-xl border-4 bg-white cursor-pointer hover:scale-[1.02] transition duration-300" style={{ borderColor: idx === viewIndex ? colors.primary : 'transparent' }} onClick={() => { setViewIndex(idx); setIsModalOpen(true); }}>
-                        <img src={img} alt={`Mahar ${idx+1}`} className="w-full h-auto object-cover aspect-square" />
-                        <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                            <Maximize2 className="w-8 h-8 drop-shadow-md" />
+                    // MODIFIKASI: Menambahkan aspect-square untuk tampilan gambar yang konsisten
+                    <div key={idx} className="group relative aspect-square rounded-2xl overflow-hidden shadow-xl border-4 bg-white cursor-pointer transition duration-300" style={{ borderColor: idx === viewIndex ? colors.primary : 'transparent' }}>
+                        <img src={img} alt={`Mahar ${idx+1}`} className="w-full h-full object-cover" />
+                        {/* MODIFIKASI: Mengganti overlay dengan tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
+                            <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                             <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
+                        <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
                     </div>
                 ))}
             </div>
 
             {isModalOpen && (
-                <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 backdrop-blur-md">
-                    <button className="absolute top-4 right-4 text-white/80 hover:text-white transition p-2 bg-white/10 rounded-full" onClick={() => setIsModalOpen(false)}>
+                <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 backdrop-blur-md" onClick={() => setIsModalOpen(false)}>
+                    
+                    {/* Red Close Button */}
+                    <button 
+                        className="absolute top-4 right-4 p-2 z-50 rounded-full transition" 
+                        onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); }}
+                        style={{ backgroundColor: colors.secondary, color: 'white' }} 
+                    >
                         <X className="w-8 h-8" />
                     </button>
                     
-                    <button className="absolute left-4 text-white/80 hover:text-white p-4" onClick={(e) => { e.stopPropagation(); setViewIndex(prev => prev === 0 ? images.length - 1 : prev - 1); }}>
-                        <ChevronLeft className="w-10 h-10" />
-                    </button>
+                    {/* Previous Button (Slider) */}
+                    {images.length > 1 && (
+                        <button 
+                            className="absolute left-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={(e) => { e.stopPropagation(); setViewIndex(prev => prev === 0 ? images.length - 1 : prev - 1); }}
+                        >
+                            <ChevronLeft className="w-10 h-10" />
+                        </button>
+                    )}
 
-                    <div className="max-w-3xl max-h-[85vh] relative group">
-                        <img src={images[viewIndex]} alt="Full View" className="max-h-[85vh] w-auto object-contain rounded-lg shadow-2xl" />
+                    <div 
+                        className="max-w-3xl max-h-[85vh] relative group"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* MODIFIKASI: Menambahkan aspect-square agar modal tetap rapi */}
+                        <img src={images[viewIndex]} alt="Full View" className="max-h-[85vh] w-auto object-contain rounded-lg shadow-2xl aspect-square" />
+                        {/* Tombol Download & Edit di dalam modal (New Style) */}
                         <div className="absolute bottom-4 right-4 flex gap-3">
-                             <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex]); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                             <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Download className="w-4 h-4" /> Download
+                            </button>
+                             <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                                <Wand2 className="w-4 h-4" /> Edit
                             </button>
                         </div>
                     </div>
 
-                    <button className="absolute right-4 text-white/80 hover:text-white p-4" onClick={(e) => { e.stopPropagation(); setViewIndex(prev => (prev + 1) % images.length); }}>
-                        <ChevronRight className="w-10 h-10" />
-                    </button>
+                    {/* Next Button (Slider) */}
+                    {images.length > 1 && (
+                        <button 
+                            className="absolute right-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={(e) => { e.stopPropagation(); setViewIndex(prev => (prev + 1) % images.length); }}
+                        >
+                            <ChevronRight className="w-10 h-10" />
+                        </button>
+                    )}
 
+                    {/* Index indicator */}
                     <div className="absolute bottom-8 flex gap-2">
                         {images.map((_, idx) => (
                             <div key={idx} className={`w-2 h-2 rounded-full transition-all ${idx === viewIndex ? 'bg-white w-6' : 'bg-white/40'}`} />
@@ -1524,7 +2099,7 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
         reader.onload = () => resolve(reader.result.split(',')[1]);
         reader.onerror = (error) => reject(error);
     });
-
+    
     const handleSubmit = async (e) => {
         e.preventDefault();
         
@@ -1646,10 +2221,18 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
                 
                 try {
-                    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: "user", parts: imageParts }], generationConfig: { responseModalities: ['IMAGE'] } }) });
+                    const response = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: "user", parts: imageParts }], generationConfig: { responseModalities: ['IMAGE'] } }) });
                     if (!response.ok) return null;
                     const result = await response.json();
                     const base64 = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+
+                    // FIX: Menambahkan pengecekan base64 dan logging finishReason
+                    if (!base64) {
+                        const finishReason = result?.candidates?.[0]?.finishReason;
+                        const error = result?.error?.message || 'Unknown API failure.';
+                        console.error(`Magic Photo gen failed for variation ${i}. Reason: ${finishReason || 'Missing Data'}. Error detail: ${error}. Response:`, result);
+                    }
+                    
                     return {
                         image: base64 ? `data:image/png;base64,${base64}` : null,
                         layout: config.ImageLayout.value // Pass layout for rendering
@@ -1858,10 +2441,15 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
     );
 };
 
-const MagicPhotoResults = ({ results, isLoading, colors }) => {
+const MagicPhotoResults = ({ results, isLoading, colors, setEditContext }) => {
     // Correctly handle the new data structure from handleSubmit
     const dataList = results?.data?.results || [];
-    const [selectedItem, setSelectedItem] = useState(null); // Stores full item object {image, layout}
+    // State baru untuk modal view
+    const [viewIndex, setViewIndex] = useState(0); 
+    const [isModalOpen, setIsModalOpen] = useState(false);
+
+    // Dapatkan item yang sedang dilihat
+    const currentItem = dataList[viewIndex];
     
     // Fungsi baru untuk download cropped
     const handleDownloadCropped = (item, index) => {
@@ -1911,6 +2499,11 @@ const MagicPhotoResults = ({ results, isLoading, colors }) => {
             safeDownload(canvas.toDataURL('image/png'), `Magic-Photo-${index + 1}-${Date.now()}.png`);
         };
     };
+    
+    // Fungsi untuk membuka modal edit
+    const handleEdit = (item, index) => {
+        setEditContext({ image: item.image, index, layout: item.layout });
+    };
 
     // Helper to determine tailwind aspect ratio class based on the layout string
     const getAspectRatioClass = (layoutString) => {
@@ -1920,6 +2513,17 @@ const MagicPhotoResults = ({ results, isLoading, colors }) => {
         if (layoutString.includes('3:4')) return "aspect-[3/4]";
         return "aspect-square";
     };
+
+    // Navigation functions
+    const goToPrev = (e) => {
+        e.stopPropagation();
+        setViewIndex(prev => (prev - 1 + dataList.length) % dataList.length);
+    };
+    const goToNext = (e) => {
+        e.stopPropagation();
+        setViewIndex(prev => (prev + 1) % dataList.length);
+    };
+
 
     if (isLoading) return <div className="p-6"><h2 className="text-2xl font-bold text-center mb-6" style={{ color: colors.text }}>Sedang Memproses 2 Variasi Premium...</h2><SkeletonGrid primaryColor={colors.primary} secondaryColor={colors.secondary} /></div>;
     
@@ -1934,32 +2538,77 @@ const MagicPhotoResults = ({ results, isLoading, colors }) => {
                     <div key={idx} className={`group relative rounded-xl overflow-hidden shadow-lg bg-gray-100 border-2 border-transparent hover:border-[${colors.primary}] transition ${getAspectRatioClass(item.layout)}`}>
                         <img src={item.image} alt={`Result ${idx}`} className="w-full h-full object-cover" />
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
-                            <button onClick={() => setSelectedItem(item)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
+                            {/* Memperbarui handler untuk modal view */}
+                            <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
                             <button onClick={() => handleDownloadCropped(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                            <button onClick={() => handleEdit(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
                         <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
                     </div>
                 ))}
             </div>
             
-            {/* MODAL VIEW - FIXED TO RESPECT ASPECT RATIO */}
-            {selectedItem && (
-                <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setSelectedItem(null)}>
-                    <button className="absolute top-4 right-4 text-white p-2 z-50"><X className="w-8 h-8" /></button>
-                    {/* CONTAINER MENGIKUTI ASPECT RASIO YANG DIPILIH DENGAN TEGAS */}
-                    {/* Menggunakan div luar untuk membatasi ukuran layar, dan div dalam untuk memaksa rasio */}
+            {/* MODAL VIEW - FIXED TO RESPECT ASPECT RATIO (MODIFIKASI BARU) */}
+            {isModalOpen && currentItem && (
+                <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}>
+                    
+                    {/* Tombol Close Merah */}
+                    <button 
+                        className="absolute top-4 right-4 p-2 z-50 rounded-full transition" 
+                        onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); }}
+                        style={{ backgroundColor: colors.secondary, color: 'white' }} 
+                    >
+                        <X className="w-8 h-8" />
+                    </button>
+                    
+                    {/* Tombol Sebelumnya (Slider) */}
+                    {dataList.length > 1 && (
+                        <button 
+                            className="absolute left-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={goToPrev}
+                        >
+                            <ChevronLeft className="w-10 h-10" />
+                        </button>
+                    )}
+
                     <div 
                         className="relative w-full h-full max-h-[90vh] max-w-[90vw] flex items-center justify-center p-4"
                         onClick={(e) => e.stopPropagation()}
                     >
-                        <div className={`shadow-2xl rounded-xl overflow-hidden max-w-full max-h-full ${getAspectRatioClass(selectedItem.layout)}`} style={{ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '100%' }}>
+                        <div className={`shadow-2xl rounded-xl overflow-hidden max-w-full max-h-full ${getAspectRatioClass(currentItem.layout)}`} style={{ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '100%' }}>
                              <img 
-                                src={selectedItem.image} 
+                                src={currentItem.image} 
                                 alt="Full View" 
                                 className="w-full h-full object-cover" 
                                 style={{ objectFit: 'cover' }} 
                              />
                         </div>
+                         {/* Tombol Download & Edit di Modal */}
+                        <div className="absolute bottom-4 right-4 flex gap-3">
+                            <button onClick={(e) => { e.stopPropagation(); handleDownloadCropped(currentItem, viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                                <Download className="w-4 h-4" /> Download
+                            </button>
+                            <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(currentItem, viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                                <Wand2 className="w-4 h-4" /> Edit
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Tombol Selanjutnya (Slider) */}
+                    {dataList.length > 1 && (
+                        <button 
+                            className="absolute right-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={goToNext}
+                        >
+                            <ChevronRight className="w-10 h-10" />
+                        </button>
+                    )}
+                    
+                    {/* Index indicator */}
+                    <div className="absolute bottom-8 flex gap-2">
+                        {dataList.map((_, idx) => (
+                            <div key={idx} className={`w-2 h-2 rounded-full transition-all ${idx === viewIndex ? 'bg-white w-6' : 'bg-white/40'}`} />
+                        ))}
                     </div>
                 </div>
             )}
@@ -2003,24 +2652,6 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
         reader.onerror = (error) => reject(error);
   });
 
-  const fetchWithRetry = async (url, options, maxRetries = 3) => {
-    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            const response = await fetch(url, options);
-            if (response.ok) return response;
-            if (response.status === 429 || response.status >= 500) {
-                if (i === maxRetries - 1) throw new Error(`API call failed after ${maxRetries} retries: ${response.statusText}`);
-                await delay(Math.pow(2, i) * 1000); continue;
-            }
-            throw new Error(`API error: ${response.statusText}`);
-        } catch (error) {
-            if (i === maxRetries - 1) throw error;
-            await delay(Math.pow(2, i) * 1000);
-        }
-    }
-  };
-
   const structuredResponseSchema = useMemo(() => ({ type: "OBJECT", properties: { proTips: { type: "STRING" } } }), []);
 
   const handleSubmit = async (e) => {
@@ -2028,6 +2659,8 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
     if (hantaranItems.length === 0) { setErrors({hantaranItems: 'Wajib mengunggah minimal 1 foto barang hantaran.'}); return; }
     setErrors({}); onGenerate({ start: true });
 
+    const apiKey = ""; // FIX: Deklarasi apiKey di sini agar terjangkau oleh semua panggilan API
+    
     const allPresets = { decoration, photoStyle, otherDetail };
     const theme = allPresets.decoration.Theme?.value || 'Minimalist';
     const style = allPresets.decoration.Style?.value || 'Classic';
@@ -2044,62 +2677,11 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
         const containerBase64 = containerRef ? await fileToBase64(containerRef) : null;
         const decorBase64List = await Promise.all(decorElementRef.map(fileToBase64));
 
-        const imageParts = [];
-        hantaranBase64List.forEach((b64) => { if (b64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: b64 } }); });
-        if (containerBase64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: containerBase64 } });
-        decorBase64List.forEach((b64) => { if (b64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: b64 } }); });
-
-        // CHAIN OF THOUGHT PROMPT UPDATED
-        const strictPrompt = `
-        **SYSTEM ROLE: ELITE PRODUCT STYLIST & PHOTOGRAPHER**
-        **TASK: DEEP VISUAL ANALYSIS & HANTARAN ARRANGEMENT GENERATION**
-
-        **INPUT ANALYSIS (CHAIN OF THOUGHT PROCESS):**
-        1.  **Visual Audit of Source Material:** - Analyze the uploaded "Hantaran Items" images carefully. Identify the material (e.g., velvet, gold, food, fabric?), exact colors, textures, and shape. 
-            - *CRITICAL:* The visual identity of these items must be preserved in the final output. Do not hallucinate different items.
-        
-        2.  **Container & Structure Analysis:** - The user selected container: "${container}". 
-            - ${containerRef ? "A specific reference image was provided for the container. Analyze its shape, transparency, and material properties." : "Use a standard, high-end commercial version of this container type."}
-        
-        3.  **Design Language & Preset Integration:**
-            - **Theme:** ${theme}
-            - **Style:** ${style}
-            - **Cultural Nuance:** ${culture}
-            - **Color Palette:** ${colorPaletteName} (Ensure this harmonizes with the items)
-            - **Arrangement Logic:** ${itemArrangement}
-            - **Prop Density:** ${propDensity}
-            - **Key Decoration:** ${decorElement}
-
-        4.  **Synthesis & Composition Strategy:** - Mentally place the "Hantaran Items" into the "${container}" using the "${itemArrangement}" layout. 
-            - Apply decoration elements (${decorElement}) consistent with the "${theme}" theme and "${culture}" culture. 
-            - Ensure the "${propDensity}" is respected (don't overcrowd if 'Minimalist', don't leave empty if 'High Density').
-            - Harmonize the background (${background}) with the palette.
-
-        **FINAL GENERATION DIRECTIVE:**
-        Create a single, high-definition (8k), photorealistic image based on the synthesis above.
-        - **Subject:** The fully arranged Hantaran box containing the user's items.
-        - **Environment:** ${background} single draped fabric background. Professional studio lighting (Softbox) to create depth and elegant reflections.
-        - **Camera:** Eye-level or slightly high-angle (45 degrees) to show contents clearly.
-        - **Constraint:** NO spilling outside the container (unless 'Overflowing' density is set). NO text overlays.
-        - **Detail Override:** ${allPresets.otherDetail || 'None'}
-        `;
-        imageParts.unshift({ text: strictPrompt });
-
-        const apiKey = "";
-        const imageApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
-        let generatedPhotoUrl = "https://placehold.co/800x800/D8A7A7/3C3C3C?text=GENERASI+GAMBAR+GAGAL";
-
-        try {
-            const imageResponse = await fetchWithRetry(imageApiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: "user", parts: imageParts }], generationConfig: { responseModalities: ['IMAGE'] } }) });
-            const imageResult = await imageResponse.json();
-            const base64Data = imageResult?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
-            if (base64Data) generatedPhotoUrl = `data:image/png;base64,${base64Data}`;
-        } catch (e) { console.error("Image gen failed:", e); }
-
         const structuredQuery = `Expert advice (1 short paragraph) for hantaran: Container ${container}, Theme ${theme}, Style ${style}, Culture ${culture}. Use bolding.`;
         const structuredApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
         let structuredData = { proTips: "Tips tidak tersedia." };
 
+        // 1. Generate Pro Tips (Text generation is faster, do it first)
         try {
             const structuredResponse = await fetchWithRetry(structuredApiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: structuredQuery }] }], generationConfig: { responseMimeType: "application/json", responseSchema: structuredResponseSchema } }) });
             const structuredResult = await structuredResponse.json();
@@ -2107,9 +2689,79 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
             if (jsonText) structuredData = JSON.parse(jsonText);
         } catch (e) { console.error("Text gen failed:", e); }
 
-        onGenerate({ data: { photoUrl: generatedPhotoUrl, proTips: structuredData.proTips }, start: false });
+
+        // 2. Generate Image (2 Variations)
+        const imageApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
+        
+        const promises = [1, 2].map(async (i) => {
+            const imageParts = [];
+            hantaranBase64List.forEach((b64) => { if (b64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: b64 } }); });
+            if (containerBase64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: containerBase64 } });
+            decorBase64List.forEach((b64) => { if (b64) imageParts.push({ inlineData: { mimeType: "image/jpeg", data: b64 } }); });
+            
+            const strictPrompt = `
+            **SYSTEM ROLE: ELITE PRODUCT STYLIST & PHOTOGRAPHER - VARIATION ${i}**
+            **TASK: DEEP VISUAL ANALYSIS & HANTARAN ARRANGEMENT GENERATION**
+
+            **INPUT ANALYSIS (CHAIN OF THOUGHT PROCESS):**
+            1.  **Visual Audit of Source Material:** - Analyze the uploaded "Hantaran Items" images carefully. Identify the material (e.g., velvet, gold, food, fabric?), exact colors, textures, and shape. 
+                - *CRITICAL:* The visual identity of these items must be preserved in the final output. Do not hallucinate different items.
+            
+            2.  **Container & Structure Analysis:** - The user selected container: "${container}". 
+                - ${containerRef ? "A specific reference image was provided for the container. Analyze its shape, transparency, and material properties." : "Use a standard, high-end commercial version of this container type."}
+            
+            3.  **Design Language & Preset Integration:**
+                - **Theme:** ${theme}
+                - **Style:** ${style}
+                - **Cultural Nuance:** ${culture}
+                - **ColorPalette:** ${colorPaletteName} (Ensure this harmonizes with the items)
+                - **Arrangement Logic:** ${itemArrangement}
+                - **Prop Density:** ${propDensity}
+                - **Key Decoration:** ${decorElement}
+
+            4.  **Synthesis & Composition Strategy:** - Mentally place the "Hantaran Items" into the "${container}" using the "${itemArrangement}" layout. 
+                - Apply decoration elements (${decorElement}) consistent with the "${theme}" theme dan "${culture}" culture. 
+                - Ensure the "${propDensity}" is respected (don't overcrowd if 'Minimalist', don't leave empty if 'High Density').
+                - Harmonize the background (${background}) with the palette.
+
+            **FINAL GENERATION DIRECTIVE:**
+            Create a single, high-definition (8k), photorealistic image based on the synthesis above.
+            - **Subject:** The fully arranged Hantaran box containing the user's items.
+            - **Environment:** ${background} single draped fabric background. Professional studio lighting (Softbox) to create depth and elegant reflections.
+            - **Camera:** Eye-level or slightly high-angle (45 degrees) to show contents clearly.
+            - **Constraint:** NO spilling outside the container (unless 'Overflowing' density is set). NO text overlays.
+            - **Detail Override:** ${allPresets.otherDetail || 'None'}
+            `;
+            imageParts.unshift({ text: strictPrompt });
+
+            try {
+                const imageResponse = await fetchWithRetry(imageApiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: "user", parts: imageParts }], generationConfig: { responseModalities: ['IMAGE'] } }) });
+                const imageResult = await imageResponse.json();
+                const base64Data = imageResult?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+                
+                // FIX: Menambahkan pengecekan base64 dan logging finishReason
+                if (!base64Data) {
+                    const finishReason = imageResult?.candidates?.[0]?.finishReason;
+                    const error = imageResult?.error?.message || 'Unknown API failure.';
+                    console.error(`Image gen failed for variation ${i}. Reason: ${finishReason || 'Missing Data'}. Error detail: ${error}. Response:`, imageResult);
+                }
+
+                return base64Data ? `data:image/png;base64,${base64Data}` : null;
+            } catch (e) { 
+                console.error(`Image gen failed for variation ${i}:`, e);
+                return null;
+            }
+        });
+
+        const imageResults = await Promise.all(promises);
+        const validImages = imageResults.filter(url => url !== null);
+        
+        if (validImages.length === 0) throw new Error("Gagal membuat gambar inspirasi.");
+
+        onGenerate({ data: { images: validImages, proTips: structuredData.proTips }, start: false });
       } catch (error) {
-          onGenerate({ data: { photoUrl: "https://placehold.co/800x800/800000/FFFFFF?text=ERROR", proTips: `Error: ${error.message}` }, start: false });
+          onGenerate({ data: { images: [], proTips: `Error: ${error.message}` }, start: false });
+          alert(`Terjadi kesalahan: ${error.message}`);
       }
   };
 
@@ -2166,62 +2818,115 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
   );
 };
 
-const ArrangementIdeaResults = ({ results, isLoading, colors }) => {
-    const { photoUrl, proTips } = results?.data || {};
+const ArrangementIdeaResults = ({ results, isLoading, colors, setEditContext }) => {
+    // MODIFIKASI: Menggunakan struktur grid dan modal yang mirip dengan MaharDesignResults/MagicPhotoResults
+    const { images, proTips } = results?.data || {};
+    const [viewIndex, setViewIndex] = useState(0);
     const [isModalOpen, setIsModalOpen] = useState(false);
-    const canvasRef = useRef(null);
 
-    useEffect(() => {
-        if (photoUrl && canvasRef.current) {
-            const canvas = canvasRef.current;
-            const ctx = canvas.getContext('2d');
-            const img = new Image();
-            img.crossOrigin = "anonymous";
-            img.src = photoUrl;
-            img.onload = () => {
-                canvas.width = img.width; canvas.height = img.height;
-                ctx.drawImage(img, 0, 0);
-                const fontSize = Math.max(16, img.width * 0.025);
-                ctx.font = `italic ${fontSize}px 'Brush Script MT', cursive`;
-                ctx.textAlign = "center"; ctx.textBaseline = "middle";
-                ctx.shadowColor = "rgba(0, 0, 0, 0.7)"; ctx.shadowBlur = 4; ctx.lineWidth = 2; ctx.fillStyle = "#ffffff";
-                ctx.fillText("*Foto hanya ilustrasi hantaran,", img.width / 2, img.height - (fontSize * 2.5));
-                ctx.fillText("tampilan barang mungkin berbeda", img.width / 2, img.height - (fontSize * 1.2));
-            };
-        }
-    }, [photoUrl]);
-
-    const handleDownloadCanvas = () => {
-        if (canvasRef.current) {
-            // PERBAIKAN DOWNLOAD: Gunakan safeDownload
-            safeDownload(canvasRef.current.toDataURL('image/png'), `Hantaran-Studio-${Date.now()}.png`);
-        }
+    const handleDownload = (url, index) => {
+        safeDownload(url, `Hantaran-Var${index+1}-${Date.now()}.png`);
     };
+    
+    // Fungsi untuk membuka modal edit
+    const handleEdit = (image, index) => {
+        setEditContext({ image, index, layout: '1:1 (Square)' }); // Layout default square
+    };
+
+    if (isLoading) return <div className="p-4 md:p-6 h-full flex flex-col justify-center"><SkeletonLoading primaryColor={colors.primary} secondaryColor={colors.secondary} bgColor={colors.bg} /></div>;
+    
+    if (!images || images.length === 0) return (
+        <div className="flex flex-col items-center justify-center h-full min-h-[500px] p-8 text-center" style={{ color: colors.text }}>
+            <Gift className="w-20 h-20 mb-4 opacity-30" />
+            <h3 className="text-xl font-semibold mb-2">Siap Menerima Inspirasi?</h3>
+            <p className="text-gray-500">Hasil desain inspirasi Anda akan muncul di sini.</p>
+        </div>
+    );
 
     return (
         <div className="flex flex-col gap-8 p-4 md:p-6">
             <h2 className="text-3xl font-bold text-center" style={{ color: colors.text }}>Hasil Studio</h2>
-            {isLoading ? <SkeletonLoading primaryColor={colors.primary} secondaryColor={colors.secondary} bgColor={colors.bg} /> : !photoUrl ? (
-                <div className="flex flex-col items-center justify-center h-full min-h-[500px] p-8 text-center" style={{ color: colors.text }}><ImageIcon className="w-16 h-16 mb-4" style={{ color: colors.secondary }} /><h3 className="text-xl font-semibold mb-2">Siap Menerima Inspirasi?</h3></div>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="col-span-1 p-2 rounded-xl" style={{ backgroundColor: colors.bg }}>
-                        <div className="bg-white rounded-xl shadow-2xl overflow-hidden relative group border-4" style={{ borderColor: colors.primary }}>
-                            <canvas ref={canvasRef} className="hidden" />
-                            <img src={photoUrl} alt="Result" className="w-full aspect-square object-cover" onClick={() => setIsModalOpen(true)} />
-                            <div className="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/70 to-transparent flex justify-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                                <button onClick={() => setIsModalOpen(true)} className="p-2 bg-white/20 backdrop-blur-md rounded-full text-white"><Maximize2 className="w-5 h-5" /></button>
-                                <button onClick={handleDownloadCanvas} className="p-2 bg-white/20 backdrop-blur-md rounded-full text-white"><Download className="w-5 h-5" /></button>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Panel Pro Tips di sebelah kiri atau atas */}
+                 <div className="col-span-full md:col-span-1 p-5 rounded-xl bg-white shadow-lg border-l-4 h-fit md:h-full" style={{ borderColor: colors.primary }}>
+                    <h3 className="text-xl font-semibold mb-3 flex items-center gap-2" style={{ color: colors.text }}><Feather className="w-5 h-5" /> Pro Tips</h3>
+                    <div className="font-sans text-sm" style={{ color: colors.text }}>{renderProTips(proTips)}</div>
+                </div>
+
+                {/* Grid Gambar di sebelah kanan atau bawah */}
+                <div className="col-span-full md:col-span-1 grid grid-cols-1 gap-6">
+                    {images.map((img, idx) => (
+                         // MODIFIKASI: Menambahkan aspect-square untuk tampilan gambar yang konsisten
+                        <div key={idx} className="group relative aspect-square rounded-2xl overflow-hidden shadow-xl border-4 bg-white cursor-pointer transition duration-300" style={{ borderColor: colors.primary }}>
+                            <img src={img} alt={`Inspiration ${idx+1}`} className="w-full h-full object-cover" />
+                             {/* Tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
+                                <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
+                                <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                                <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                             </div>
+                            <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {isModalOpen && (
+                 <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4 backdrop-blur-md" onClick={() => setIsModalOpen(false)}>
+                    
+                    {/* Red Close Button */}
+                    <button 
+                        className="absolute top-4 right-4 p-2 z-50 rounded-full transition" 
+                        onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); }}
+                        style={{ backgroundColor: colors.secondary, color: 'white' }} 
+                    >
+                        <X className="w-8 h-8" />
+                    </button>
+                    
+                    {/* Previous Button (Slider) */}
+                    {images.length > 1 && (
+                        <button 
+                            className="absolute left-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={(e) => { e.stopPropagation(); setViewIndex(prev => prev === 0 ? images.length - 1 : prev - 1); }}
+                        >
+                            <ChevronLeft className="w-10 h-10" />
+                        </button>
+                    )}
+
+                    <div 
+                        className="max-w-3xl max-h-[85vh] relative group"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <img src={images[viewIndex]} alt="Full View" className="max-h-[85vh] w-auto object-contain rounded-lg shadow-2xl aspect-square" />
+                        <div className="absolute bottom-4 right-4 flex gap-3">
+                             <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                                <Download className="w-4 h-4" /> Download
+                            </button>
+                            <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                                <Wand2 className="w-4 h-4" /> Edit
+                            </button>
                         </div>
                     </div>
-                    <div className="col-span-1 p-5 rounded-xl bg-white shadow-lg border-l-4 h-full" style={{ borderColor: colors.primary }}>
-                        <h3 className="text-xl font-semibold mb-3 flex items-center gap-2" style={{ color: colors.text }}><Feather className="w-5 h-5" /> Pro Tips</h3>
-                        <div className="font-sans text-sm" style={{ color: colors.text }}>{renderProTips(proTips)}</div>
+
+                    {/* Next Button (Slider) */}
+                    {images.length > 1 && (
+                        <button 
+                            className="absolute right-4 text-white/80 hover:text-white p-4 transition" 
+                            onClick={(e) => { e.stopPropagation(); setViewIndex(prev => (prev + 1) % images.length); }}
+                        >
+                            <ChevronRight className="w-10 h-10" />
+                        </button>
+                    )}
+
+                    {/* Index indicator */}
+                    <div className="absolute bottom-8 flex gap-2">
+                        {images.map((_, idx) => (
+                            <div key={idx} className={`w-2 h-2 rounded-full transition-all ${idx === viewIndex ? 'bg-white w-6' : 'bg-white/40'}`} />
+                        ))}
                     </div>
                 </div>
             )}
-            {isModalOpen && <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4" onClick={() => setIsModalOpen(false)}><button className="absolute top-4 right-4 text-white p-2"><X className="w-8 h-8" /></button><img src={photoUrl} className="max-w-full max-h-full" /></div>}
         </div>
     );
 };
@@ -2233,13 +2938,41 @@ const App = () => {
   const [activeModule, setActiveModule] = useState(MODULES[0].id);
   const [results, setResults] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  
+  // State baru untuk konteks edit gambar
+  const [editContext, setEditContext] = useState(null); // { image: url, index: number, layout: string (optional) }
+
 
   const toggleSidebar = () => setIsSidebarOpen(prev => !prev);
-  const handleGenerate = ({ data, start }) => { if (start !== undefined) setIsGenerating(start); if (data) setResults(data); };
+  const handleGenerate = ({ data, start }) => { 
+    if (start !== undefined) setIsGenerating(start); 
+    if (data) setResults(data); 
+  };
+  
+  // Fungsi baru untuk memperbarui satu gambar dalam results
+  const updateSingleImage = useCallback((index, newImageUrl, layout = '1:1 (Square)') => {
+        setResults(prev => {
+            if (!prev) return null;
+
+            const newResults = { ...prev };
+            
+            if (newResults.images) { // For Arrangement, Bouquet, Mahar (simple array)
+                const newImages = [...newResults.images];
+                newImages[index] = newImageUrl;
+                newResults.images = newImages;
+            } else if (newResults.results) { // For Magic Photo (complex array with layout)
+                const newResultsArray = [...newResults.results];
+                newResultsArray[index] = { image: newImageUrl, layout: layout };
+                newResults.results = newResultsArray;
+            }
+
+            return newResults;
+        });
+    }, []);
 
   const currentModuleComponent = useMemo(() => {
     if (activeModule === 'arrangement') return <ArrangementIdeaForm onGenerate={handleGenerate} isGenerating={isGenerating} colors={colors} />;
-    if (activeModule === 'mahar') return <MaharDesignForm onGenerate={handleGenerate} isGenerating={isGenerating} colors={colors} />; // Modul Baru
+    if (activeModule === 'mahar') return <MaharDesignForm onGenerate={handleGenerate} isGenerating={isGenerating} colors={colors} />; 
     if (activeModule === 'bouquet') return <FlowerBouquetForm onGenerate={handleGenerate} isGenerating={isGenerating} colors={colors} />;
     if (activeModule === 'invoice') return <InvoiceMaker colors={colors} APP_LOGO_URL={APP_LOGO_URL} />;
     if (activeModule === 'checker') return <ItemChecker colors={colors} APP_LOGO_URL={APP_LOGO_URL} />;
@@ -2290,13 +3023,27 @@ const App = () => {
         <div className="flex-1 p-4 md:p-8 overflow-y-auto">
           <div className="flex flex-col gap-8 w-full h-full">
             <div className={`w-full bg-white rounded-3xl shadow-xl p-2 ${['invoice', 'checker'].includes(activeModule) ? 'h-full' : 'h-fit'}`} style={{ backgroundColor: colors.bg }}>{currentModuleComponent}</div>
-            {activeModule === 'arrangement' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><ArrangementIdeaResults results={{data: results}} isLoading={isGenerating} colors={colors} /></div>}
-            {activeModule === 'bouquet' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><FlowerBouquetResults results={{data: results}} isLoading={isGenerating} colors={colors} /></div>}
-            {activeModule === 'mahar' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><MaharDesignResults results={{data: results}} isLoading={isGenerating} colors={colors} /></div>}
-            {activeModule === 'magic' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><MagicPhotoResults results={{data: results}} isLoading={isGenerating} colors={colors} /></div>}
+            
+            {/* Hasil Design Modules, passing setEditContext and updateSingleImage */}
+            {activeModule === 'arrangement' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><ArrangementIdeaResults results={{data: results}} isLoading={isGenerating} colors={colors} setEditContext={setEditContext} /></div>}
+            {activeModule === 'bouquet' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><FlowerBouquetResults results={{data: results}} isLoading={isGenerating} colors={colors} setEditContext={setEditContext} /></div>}
+            {activeModule === 'mahar' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><MaharDesignResults results={{data: results}} isLoading={isGenerating} colors={colors} setEditContext={setEditContext} /></div>}
+            {activeModule === 'magic' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><MagicPhotoResults results={{data: results}} isLoading={isGenerating} colors={colors} setEditContext={setEditContext} /></div>}
           </div>
         </div>
       </div>
+      
+      {/* Re-Edit Modal, muncul jika editContext terisi */}
+      {editContext && (
+             <ReEditModal
+                isOpen={!!editContext}
+                onClose={() => setEditContext(null)}
+                originalItem={editContext}
+                onUpdateImage={updateSingleImage}
+                colors={colors}
+             />
+        )}
+
     </div>
   );
 };
