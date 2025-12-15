@@ -5,7 +5,7 @@ import {
   ClipboardList, Gem, Feather, Leaf, Gift, AlertTriangle, FileText, Plus, Trash2, Printer,
   Download, ZoomIn, ZoomOut, Maximize2, RotateCcw, FileImage, User, Hand,
   ScrollText, PanelRight, PanelLeft, ClipboardCheck, PenTool, CheckSquare,
-  Calendar, StickyNote, Eraser, Flower, ChevronLeft, Coins, Sun
+  Calendar, StickyNote, Eraser, Flower, ChevronLeft, Coins, Sun, Share2
 } from 'lucide-react';
 
 // --- CONFIGURASI & DATA KONSTAN ---
@@ -194,21 +194,91 @@ const PRESET_OPTIONS = {
 
 const APP_LOGO_URL = "https://lh3.googleusercontent.com/d/1LNdn8mDbGAUzicCvbOwYPCyFjc4B6UhA";
 
-// --- GLOBAL HELPER: SAFE DOWNLOAD FOR IOS/MOBILE ---
-const safeDownload = (dataUrl, filename) => {
+// --- GLOBAL HELPER: UTILS UNTUK KONVERSI GAMBAR ---
+
+// Fungsi helper baru: Mengubah Data URI (Base64) menjadi Blob Object
+// Blob jauh lebih ramah memori daripada string Base64 yang panjang, dan lebih stabil di iOS
+const dataURItoBlob = (dataURI) => {
     try {
+        const byteString = atob(dataURI.split(',')[1]);
+        const mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0];
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+        }
+        return new Blob([ab], { type: mimeString });
+    } catch (e) {
+        console.error("Gagal convert Blob", e);
+        return null;
+    }
+};
+
+// --- GLOBAL HELPER: SAFE DOWNLOAD / SHARE FOR IOS & ALL DEVICES ---
+const safeDownload = async (dataUrl, filename) => {
+    // 1. Validasi Input
+    if (!dataUrl || !dataUrl.startsWith('data:')) {
+        console.error("Invalid data URL");
+        return;
+    }
+
+    try {
+        // 2. Konversi Base64 ke Blob (Kunci untuk iOS Memory Management)
+        const blob = dataURItoBlob(dataUrl);
+        if (!blob) throw new Error("Gagal membuat Blob image");
+
+        const file = new File([blob], filename, { type: blob.type });
+
+        // 3. STRATEGI IOS/MOBILE: Web Share API
+        // Jika browser mendukung native sharing (umum di iPhone/Android Chrome/Safari)
+        // Kita trigger menu 'Share' native. User bisa pilih "Save Image" atau "Share to WhatsApp".
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+                await navigator.share({
+                    files: [file],
+                    title: filename,
+                    text: 'Berikut adalah hasil gambar dari Hantaran Studio.'
+                });
+                console.log("Berhasil dibagikan via Web Share API");
+                return; // Sukses, keluar fungsi
+            } catch (error) {
+                // User cancel share atau error lain, lanjut ke fallback
+                if (error.name !== 'AbortError') {
+                    console.error("Gagal share, fallback ke download biasa", error);
+                } else {
+                    return; // User membatalkan sendiri
+                }
+            }
+        }
+
+        // 4. STRATEGI DESKTOP/FALLBACK: Blob URL Download
+        // Membuat URL sementara dari Blob (bukan data URI panjang)
+        const blobUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.href = dataUrl;
+        link.href = blobUrl;
         link.download = filename;
-        // Penting untuk iOS: Append ke body sebelum click
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        
+        // Membersihkan memori
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+        console.log("Download via Blob URL berhasil.");
+
     } catch (error) {
-        console.error("Download error:", error);
-        alert("Gagal mendownload otomatis. Silakan tekan dan tahan gambar untuk menyimpan manual.");
-        // Fallback: Buka di tab baru jika download gagal
-        window.open(dataUrl, '_blank');
+        console.error("Semua metode download gagal:", error);
+        
+        // 5. LAST RESORT (Jalan Terakhir): Buka Tab Baru
+        // Jika share gagal dan blob gagal, kita paksa buka gambar di tab baru
+        // Ini tidak ideal tapi lebih baik daripada tidak ada reaksi.
+        const newWindow = window.open();
+        if (newWindow) {
+            newWindow.document.write(`<img src="${dataUrl}" style="width:100%"/>`);
+            newWindow.document.title = "Tekan tahan gambar untuk menyimpan";
+        } else {
+            // Jika popup blocker aktif, coba redirect window saat ini (berisiko UX)
+             window.location.href = dataUrl;
+        }
     }
 };
 
@@ -966,7 +1036,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
     };
 
     const handleDownloadReport = async () => {
-        if (!window.html2canvas) { alert("Sistem sedang memuat, coba lagi."); return; }
+        if (!window.html2canvas) { console.error("Sistem sedang memuat html2canvas, coba lagi."); return; }
         setIsGenerating(true);
         const element = document.getElementById('checker-preview');
         const filename = `TandaTerima - ${clientName || 'Client'}.png`;
@@ -978,7 +1048,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
             safeDownload(canvas.toDataURL('image/png'), filename);
         } catch (error) {
             console.error("Download failed:", error);
-            alert("Gagal mengunduh laporan.");
+            // Menghapus alert()
         } finally {
             setIsGenerating(false);
         }
@@ -1141,9 +1211,9 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                     disabled={isGenerating}
                     className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200"
                     style={{ backgroundColor: colors.primary, color: 'white' }}
-                    title="Unduh Laporan (PNG)"
+                    title="Simpan/Bagikan Laporan"
                 >
-                    {isGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Download className="w-6 h-6" />}
+                    {isGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : (navigator.canShare ? <Share2 className="w-6 h-6" /> : <Download className="w-6 h-6" />)}
                 </button>
 
                 {/* DYNAMIC PAPER PREVIEW */}
@@ -1246,7 +1316,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
 
                             {/* Logo dan Teks Footer Baru */}
                             <div className="mt-8 flex flex-col items-center">
-                                <img src={APP_LOGO_URL} className="w-12 h-12 object-contain mb-2" alt="App Logo" />
+                                <img src={brandLogoUrl || APP_LOGO_URL} className="w-12 h-12 object-contain mb-2" alt="App Logo" />
                                 <div className="text-center text-[10px] text-gray-400">
                                     Dokumen ini dibuat secara digital melalui <span className="font-extrabold text-gray-700">HANTARAN STUDIO</span> App pada {new Date().toLocaleString('id-ID')}
                                 </div>
@@ -1295,7 +1365,7 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
     const formatRupiah = (number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
 
     const handleDownloadImage = async () => {
-        if (!window.html2canvas) { alert("Sedang memuat modul gambar, silakan coba 2 detik lagi."); return; }
+        if (!window.html2canvas) { console.error("Sedang memuat modul gambar, silakan coba 2 detik lagi."); return; }
         setIsImageGenerating(true);
         const element = document.getElementById('invoice-preview');
         const filename = `Invoice - ${brandName || 'Brand'} - ${clientName || 'Customer'}.png`;
@@ -1305,7 +1375,7 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
             safeDownload(canvas.toDataURL('image/png'), filename);
         } catch (error) {
             console.error("Gagal membuat gambar:", error);
-            alert("Gagal membuat gambar. Pastikan gambar logo dapat diakses publik.");
+            // Menghapus alert()
         } finally {
             setIsImageGenerating(false);
         }
@@ -1395,8 +1465,8 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
             </div>
 
             <div className="w-full lg:w-1/2 bg-gray-100 p-4 rounded-xl overflow-y-auto flex flex-col items-center relative pb-20">
-                <button onClick={handleDownloadImage} disabled={isImageGenerating} className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200" style={{ backgroundColor: colors.primary, color: 'white' }} title="Simpan Invoice sebagai Gambar (PNG)">
-                    {isImageGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Download className="w-6 h-6" />}
+                <button onClick={handleDownloadImage} disabled={isImageGenerating} className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200" style={{ backgroundColor: colors.primary, color: 'white' }} title="Simpan/Bagikan Invoice">
+                    {isImageGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : (navigator.canShare ? <Share2 className="w-6 h-6" /> : <Download className="w-6 h-6" />)}
                 </button>
                 {/* PERBAIKAN MOBILE: Container overflow-x-auto untuk preview */}
                 <div className="w-full overflow-x-auto">
@@ -1452,7 +1522,7 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
                              
                              {/* FOOTER BARU DENGAN LOGO DI ATAS */}
                              <div className="text-center text-xs text-gray-400 mt-6 flex flex-col items-center gap-1">
-                                <img src={APP_LOGO_URL} alt="App Logo" className="w-12 h-12 object-contain mb-1" crossOrigin="anonymous" />
+                                <img src={brandLogoUrl || APP_LOGO_URL} alt="App Logo" className="w-12 h-12 object-contain mb-1" crossOrigin="anonymous" />
                                 <p className="flex items-center gap-1">This invoice is generated by
                                     <span className="font-extrabold text-gray-700">HANTARAN STUDIO</span>
                                 </p>
@@ -1468,14 +1538,18 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
 // --- MODUL BARU: FLOWER BOUQUET ---
 
 const FlowerBouquetForm = ({ onGenerate, isGenerating, colors }) => {
-    const [bouquetConfig, setBouquetConfig] = useState({
-        Theme: { value: '', isAuto: false },
-        Style: { value: '', isAuto: false },
-        ColorPalette: { value: '', isAuto: false },
-        FlowerCombination: { value: '', isAuto: false },
-        Binding: { value: '', isAuto: false },
-        Wrapper: { value: '', isAuto: false }
-    });
+    
+    // --- PERUBAHAN DI SINI: Inisialisasi default dengan isAuto: true ---
+    const initialConfig = useMemo(() => {
+        const config = {};
+        Object.keys(PRESET_OPTIONS.bouquet).forEach(key => {
+            config[key] = { value: '', isAuto: true }; // Default to Auto
+        });
+        return config;
+    }, []);
+
+    const [bouquetConfig, setBouquetConfig] = useState(initialConfig);
+    // --- AKHIR PERUBAHAN ---
 
     const toggleAuto = (key) => {
         setBouquetConfig(prev => ({ ...prev, [key]: { ...prev[key], isAuto: !prev[key].isAuto } }));
@@ -1564,7 +1638,7 @@ const FlowerBouquetForm = ({ onGenerate, isGenerating, colors }) => {
         } catch (error) {
             console.error(error);
             onGenerate({ start: false });
-            alert(`Terjadi kesalahan saat membuat buket: ${error.message}`);
+            // Menghapus alert()
         }
     };
 
@@ -1580,8 +1654,8 @@ const FlowerBouquetForm = ({ onGenerate, isGenerating, colors }) => {
 
             <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {['Theme', 'Style', 'ColorPalette', 'FlowerCombination', 'Binding', 'Wrapper'].map(key => (
-                    <InputGroup key={key} label={key.replace(/([A-Z])/g, ' $1').trim()} isAuto={bouquetConfig[key].isAuto} onToggleAuto={() => toggleAuto(key)}>
-                        <Dropdown value={bouquetConfig[key].value} onChange={(e) => handleChange(key, e.target.value)} options={PRESET_OPTIONS.bouquet[key]} disabled={bouquetConfig[key].isAuto} />
+                    <InputGroup key={key} label={key.replace(/([A-Z])/g, ' $1').trim()} isAuto={bouquetConfig[key].isAuto || false} onToggleAuto={() => toggleAuto(key)}>
+                        <Dropdown value={bouquetConfig[key].value || ''} onChange={(e) => handleChange(key, e.target.value)} options={PRESET_OPTIONS.bouquet[key]} disabled={bouquetConfig[key].isAuto} />
                     </InputGroup>
                 ))}
             </section>
@@ -1637,7 +1711,7 @@ const FlowerBouquetResults = ({ results, isLoading, colors, setEditContext }) =>
                          {/* Tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                             <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
                             <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
                         <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -1675,7 +1749,7 @@ const FlowerBouquetResults = ({ results, isLoading, colors, setEditContext }) =>
                         <div className="absolute bottom-4 right-4 flex gap-3">
                             {/* Tombol Download & Edit di Modal */}
                              <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Download className="w-4 h-4" /> Download
+                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
                             </button>
                             <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
@@ -1708,14 +1782,19 @@ const FlowerBouquetResults = ({ results, isLoading, colors, setEditContext }) =>
 // --- MODUL BARU: MAHAR DESIGN ---
 
 const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
-    const [config, setConfig] = useState({
-        FrameShape: { value: '', isAuto: false },
-        ArrangementStyle: { value: '', isAuto: false },
-        Culture: { value: '', isAuto: false },
-        DecorationItems: { value: '', isAuto: false },
-        BackgroundFabric: { value: '', isAuto: false }
-    });
     
+    // --- PERUBAHAN DI SINI: Inisialisasi default dengan isAuto: true ---
+    const initialConfig = useMemo(() => {
+        const config = {};
+        Object.keys(PRESET_OPTIONS.mahar).forEach(key => {
+            config[key] = { value: '', isAuto: true }; // Default to Auto
+        });
+        return config;
+    }, []);
+
+    const [config, setConfig] = useState(initialConfig);
+    // --- AKHIR PERUBAHAN ---
+
     const [nominalIsi, setNominalIsi] = useState('');
     const [namaPasangan, setNamaPasangan] = useState('');
     const [weddingDate, setWeddingDate] = useState(''); // New state for wedding date
@@ -1821,7 +1900,7 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
         } catch (error) {
             console.error(error);
             onGenerate({ start: false });
-            alert(`Terjadi kesalahan saat membuat desain mahar: ${error.message}`);
+            // Menghapus alert()
         }
     };
 
@@ -1859,8 +1938,8 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
 
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {['FrameShape', 'ArrangementStyle', 'Culture', 'DecorationItems', 'BackgroundFabric'].map(key => (
-                        <InputGroup key={key} label={key.replace(/([A-Z])/g, ' $1').trim()} isAuto={config[key].isAuto} onToggleAuto={() => toggleAuto(key)}>
-                            <Dropdown value={config[key].value} onChange={(e) => handleChange(key, e.target.value)} options={PRESET_OPTIONS.mahar[key]} disabled={config[key].isAuto} />
+                        <InputGroup key={key} label={key.replace(/([A-Z])/g, ' $1').trim()} isAuto={config[key]?.isAuto || false} onToggleAuto={() => toggleAuto(key)}>
+                            <Dropdown value={config[key]?.value || ''} onChange={(e) => handleChange(key, e.target.value)} options={PRESET_OPTIONS.mahar[key]} disabled={config[key]?.isAuto} />
                         </InputGroup>
                     ))}
                  </div>
@@ -1927,7 +2006,7 @@ const MaharDesignResults = ({ results, isLoading, colors, setEditContext }) => {
                         {/* MODIFIKASI: Mengganti overlay dengan tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                             <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
                              <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
                         <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -1966,7 +2045,7 @@ const MaharDesignResults = ({ results, isLoading, colors, setEditContext }) => {
                         {/* Tombol Download & Edit di dalam modal (New Style) */}
                         <div className="absolute bottom-4 right-4 flex gap-3">
                              <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Download className="w-4 h-4" /> Download
+                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
                             </button>
                              <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
@@ -2104,7 +2183,7 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
         e.preventDefault();
         
         if (magicItem.length === 0) {
-            alert("Harap upload 1 foto produk utama!");
+            console.error("Harap upload 1 foto produk utama!");
             return;
         }
 
@@ -2249,7 +2328,7 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
         } catch (error) {
             console.error(error);
             onGenerate({ start: false });
-            alert(`Terjadi kesalahan: ${error.message}`);
+            // Menghapus alert()
         }
     };
 
@@ -2328,7 +2407,7 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
 
                     {style === 'Hand Carry' && (
                         <InputGroup label="Pose Tangan" isAuto={config.PoseTangan.isAuto} onToggleAuto={() => toggleAuto('PoseTangan')}>
-                             <Dropdown value={config.PoseTangan.value} onChange={(e) => handleChange('PoseTangan', e.target.value)} options={PRESET_OPTIONS.magic.PosesHandCarry} disabled={config.PoseTangan.isAuto} />
+                             <Dropdown value={config.PoseTangan.value || ''} onChange={(e) => handleChange('PoseTangan', e.target.value)} options={PRESET_OPTIONS.magic.PosesHandCarry} disabled={config.PoseTangan.isAuto} />
                         </InputGroup>
                     )}
 
@@ -2342,7 +2421,7 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                                 )}
                             </InputGroup>
                             <InputGroup label="Pose Model" isAuto={config.PoseModel.isAuto} onToggleAuto={() => toggleAuto('PoseModel')}>
-                                <Dropdown value={config.PoseModel.value} onChange={(e) => handleChange('PoseModel', e.target.value)} options={PRESET_OPTIONS.magic.PosesModel} disabled={config.PoseModel.isAuto} />
+                                <Dropdown value={config.PoseModel.value || ''} onChange={(e) => handleChange('PoseModel', e.target.value)} options={PRESET_OPTIONS.magic.PosesModel} disabled={config.PoseModel.isAuto} />
                             </InputGroup>
                         </>
                     )}
@@ -2387,13 +2466,13 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {/* Environment - Disabled ONLY if Retouch Mode */}
                     <InputGroup label="Environment" isAuto={config.Environment.isAuto} onToggleAuto={() => toggleAuto('Environment')} disabled={isRetouchMode}>
-                        <Dropdown value={config.Environment.value} onChange={(e) => handleChange('Environment', e.target.value)} options={PRESET_OPTIONS.magic.Environment} disabled={config.Environment.isAuto || isRetouchMode} placeholder={isRetouchMode ? "Terkunci (Mode Retouch)" : "Pilih salah satu..."} />
+                        <Dropdown value={config.Environment.value || ''} onChange={(e) => handleChange('Environment', e.target.value)} options={PRESET_OPTIONS.magic.Environment} disabled={config.Environment.isAuto || isRetouchMode} placeholder={isRetouchMode ? "Terkunci (Mode Retouch)" : "Pilih salah satu..."} />
                     </InputGroup>
 
                     {/* Background (Dependent on Environment) - Disabled ONLY if Retouch Mode */}
                     <InputGroup label="Background Detail" isAuto={config.Background.isAuto} onToggleAuto={() => toggleAuto('Background')} disabled={isRetouchMode}>
                         <Dropdown 
-                            value={config.Background.value} 
+                            value={config.Background.value || ''} 
                             onChange={(e) => handleChange('Background', e.target.value)} 
                             options={getBackgroundOptions()} 
                             disabled={config.Background.isAuto || !config.Environment.value || isRetouchMode} 
@@ -2403,7 +2482,7 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
 
                     {/* Mood - ALWAYS ACTIVE */}
                     <InputGroup label="Mood" isAuto={config.Mood.isAuto} onToggleAuto={() => toggleAuto('Mood')}>
-                        <Dropdown value={config.Mood.value} onChange={(e) => handleChange('Mood', e.target.value)} options={PRESET_OPTIONS.magic.Mood} disabled={config.Mood.isAuto} />
+                        <Dropdown value={config.Mood.value || ''} onChange={(e) => handleChange('Mood', e.target.value)} options={PRESET_OPTIONS.magic.Mood} disabled={config.Mood.isAuto} />
                     </InputGroup>
 
                     {/* Image Layout - ALWAYS ACTIVE */}
@@ -2540,7 +2619,7 @@ const MagicPhotoResults = ({ results, isLoading, colors, setEditContext }) => {
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                             {/* Memperbarui handler untuk modal view */}
                             <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                            <button onClick={() => handleDownloadCropped(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownloadCropped(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
                             <button onClick={() => handleEdit(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
                         <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -2586,7 +2665,7 @@ const MagicPhotoResults = ({ results, isLoading, colors, setEditContext }) => {
                          {/* Tombol Download & Edit di Modal */}
                         <div className="absolute bottom-4 right-4 flex gap-3">
                             <button onClick={(e) => { e.stopPropagation(); handleDownloadCropped(currentItem, viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Download className="w-4 h-4" /> Download
+                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
                             </button>
                             <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(currentItem, viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
@@ -2761,7 +2840,7 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
         onGenerate({ data: { images: validImages, proTips: structuredData.proTips }, start: false });
       } catch (error) {
           onGenerate({ data: { images: [], proTips: `Error: ${error.message}` }, start: false });
-          alert(`Terjadi kesalahan: ${error.message}`);
+          // Menghapus alert()
       }
   };
 
@@ -2863,7 +2942,7 @@ const ArrangementIdeaResults = ({ results, isLoading, colors, setEditContext }) 
                              {/* Tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                                 <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                                <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
+                                <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
                                 <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                             </div>
                             <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -2901,7 +2980,7 @@ const ArrangementIdeaResults = ({ results, isLoading, colors, setEditContext }) 
                         <img src={images[viewIndex]} alt="Full View" className="max-h-[85vh] w-auto object-contain rounded-lg shadow-2xl aspect-square" />
                         <div className="absolute bottom-4 right-4 flex gap-3">
                              <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Download className="w-4 h-4" /> Download
+                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
                             </button>
                             <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
