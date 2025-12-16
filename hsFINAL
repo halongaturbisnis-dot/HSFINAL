@@ -5,7 +5,7 @@ import {
   ClipboardList, Gem, Feather, Leaf, Gift, AlertTriangle, FileText, Plus, Trash2, Printer,
   Download, ZoomIn, ZoomOut, Maximize2, RotateCcw, FileImage, User, Hand,
   ScrollText, PanelRight, PanelLeft, ClipboardCheck, PenTool, CheckSquare,
-  Calendar, StickyNote, Eraser, Flower, ChevronLeft, Coins, Sun, Share2
+  Calendar, StickyNote, Eraser, Flower, ChevronLeft, Coins, Sun
 } from 'lucide-react';
 
 // --- CONFIGURASI & DATA KONSTAN ---
@@ -194,90 +194,99 @@ const PRESET_OPTIONS = {
 
 const APP_LOGO_URL = "https://lh3.googleusercontent.com/d/1LNdn8mDbGAUzicCvbOwYPCyFjc4B6UhA";
 
-// --- GLOBAL HELPER: UTILS UNTUK KONVERSI GAMBAR ---
+// --- GLOBAL HELPER: UNIVERSAL DOWNLOAD/SHARE (IOS & MOBILE FRIENDLY) ---
+// REVISI STRATEGI: Menggunakan pendekatan Hybrid (Web Share API > Blob URL > New Tab)
 
-// Fungsi helper baru: Mengubah Data URI (Base64) menjadi Blob Object
-// Blob jauh lebih ramah memori daripada string Base64 yang panjang, dan lebih stabil di iOS
-const dataURItoBlob = (dataURI) => {
-    try {
-        const byteString = atob(dataURI.split(',')[1]);
-        const mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0];
-        const ab = new ArrayBuffer(byteString.length);
-        const ia = new Uint8Array(ab);
-        for (let i = 0; i < byteString.length; i++) {
-            ia[i] = byteString.charCodeAt(i);
-        }
-        return new Blob([ab], { type: mimeString });
-    } catch (e) {
-        console.error("Gagal convert Blob", e);
-        return null;
-    }
-};
-
-// --- GLOBAL HELPER: SAFE DOWNLOAD / SHARE FOR IOS & ALL DEVICES ---
 const safeDownload = async (dataUrl, filename) => {
-    // 1. Validasi Input
-    if (!dataUrl || !dataUrl.startsWith('data:')) {
-        console.error("Invalid data URL");
-        return;
-    }
-
     try {
-        // 2. Konversi Base64 ke Blob (Kunci untuk iOS Memory Management)
-        const blob = dataURItoBlob(dataUrl);
-        if (!blob) throw new Error("Gagal membuat Blob image");
+        // 1. Konversi Data URL ke Blob & File Object (Penting agar data biner diakui browser)
+        const arr = dataUrl.split(',');
+        // Extract MIME type robustly
+        const mimeMatch = arr[0].match(/:(.*?);/);
+        const mime = mimeMatch && mimeMatch[1] ? mimeMatch[1] : 'image/png'; // Default ke PNG jika ekstrak gagal
+        
+        const bstr = atob(arr[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) {
+            u8arr[n] = bstr.charCodeAt(n);
+        }
+        const blob = new Blob([u8arr], { type: mime });
+        const file = new File([blob], filename, { type: mime });
 
-        const file = new File([blob], filename, { type: blob.type });
+        // DETEKSI DEVICE: Pisahkan strategi Desktop vs Mobile
+        // iOS/Safari tidak stabil dengan programmatic download biasa
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-        // 3. STRATEGI IOS/MOBILE: Web Share API
-        // Jika browser mendukung native sharing (umum di iPhone/Android Chrome/Safari)
-        // Kita trigger menu 'Share' native. User bisa pilih "Save Image" atau "Share to WhatsApp".
-        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        // 2. STRATEGI UTAMA (KHUSUS MOBILE/iOS): Web Share API
+        // Jika browser mendukung sharing file (iOS 15+, Chrome Android), gunakan ini.
+        if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
             try {
                 await navigator.share({
                     files: [file],
                     title: filename,
-                    text: 'Berikut adalah hasil gambar dari Hantaran Studio.'
+                    text: 'Dibuat dengan Hantaran Studio App'
                 });
                 console.log("Berhasil dibagikan via Web Share API");
-                return; // Sukses, keluar fungsi
-            } catch (error) {
-                // User cancel share atau error lain, lanjut ke fallback
-                if (error.name !== 'AbortError') {
-                    console.error("Gagal share, fallback ke download biasa", error);
+                return; // Sukses, keluar dari fungsi
+            } catch (shareError) {
+                // Abaikan jika user membatalkan share, tapi log error lain
+                if (shareError.name !== 'AbortError') {
+                    console.error("Web Share API gagal, mencoba metode fallback...", shareError);
+                    // Lanjut ke strategi berikutnya (Blob Download)
                 } else {
-                    return; // User membatalkan sendiri
+                    return; // User cancel, selesai.
                 }
             }
         }
 
-        // 4. STRATEGI DESKTOP/FALLBACK: Blob URL Download
-        // Membuat URL sementara dari Blob (bukan data URI panjang)
+        // 3. STRATEGI DEFAULT (DESKTOP & FALLBACK MOBILE): Blob URL Download
+        // Blob URL jauh lebih stabil daripada Data URI panjang untuk atribut 'download'
         const blobUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = blobUrl;
         link.download = filename;
+        link.style.display = 'none'; // Tambahkan style untuk menyembunyikan elemen
         document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
         
-        // Membersihkan memori
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
-        console.log("Download via Blob URL berhasil.");
+        // Trigger download
+        link.click();
+        
+        // PERBAIKAN AKHIR UNTUK DESKTOP/WINDOWS:
+        // Bersihkan memori dan elemen DOM (1 detik delay untuk memastikan browser Desktop/Windows memicu dialog simpan)
+        // Menunda penghapusan elemen <a> sangat penting untuk kompatibilitas Desktop.
+        setTimeout(() => {
+            document.body.removeChild(link); // Hapus elemen <a> setelah download dipicu
+            URL.revokeObjectURL(blobUrl);     // Bersihkan memori Blob
+        }, 1000); // 1 detik delay
+        
+        console.log("Berhasil didownload via Blob URL");
 
     } catch (error) {
         console.error("Semua metode download gagal:", error);
         
-        // 5. LAST RESORT (Jalan Terakhir): Buka Tab Baru
-        // Jika share gagal dan blob gagal, kita paksa buka gambar di tab baru
-        // Ini tidak ideal tapi lebih baik daripada tidak ada reaksi.
-        const newWindow = window.open();
-        if (newWindow) {
-            newWindow.document.write(`<img src="${dataUrl}" style="width:100%"/>`);
-            newWindow.document.title = "Tekan tahan gambar untuk menyimpan";
+        // 4. STRATEGI TERAKHIR (EMERGENCY): Buka di Tab Baru
+        // Ini adalah fallback terkuat untuk iOS/Safari yang memblokir programmatic download.
+        const newTab = window.open();
+        if (newTab) {
+            // Menggunakan warna dari config untuk UI yang konsisten
+            const primaryColor = colors.primary.replace('#', '');
+            const secondaryColor = colors.secondary.replace('#', '');
+            const textColor = colors.text.replace('#', '');
+
+            newTab.document.write(`
+                <div style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;background:#f0f0f0;padding:20px;text-align:center;">
+                    <h1 style="color:#${secondaryColor};">Gagal Download Otomatis!</h1>
+                    <p style="color:#${textColor};margin-bottom:20px;font-size:16px;">
+                        Pada perangkat iOS/Safari, silakan <strong>Tekan dan Tahan</strong> gambar di bawah (Long Press), lalu pilih <strong>'Save Image'</strong> atau <strong>'Simpan Gambar'</strong> dari menu yang muncul.
+                    </p>
+                    <img src="${dataUrl}" style="max-width:100%;max-height:70vh;box-shadow:0 8px 16px rgba(0,0,0,0.2);border-radius:12px;border: 4px solid #${primaryColor};"/>
+                    <small style="margin-top:20px;color:#${textColor};">Tutup tab ini setelah berhasil menyimpan.</small>
+                </div>
+            `);
+            newTab.document.title = "Tekan lama gambar untuk menyimpan";
         } else {
-            // Jika popup blocker aktif, coba redirect window saat ini (berisiko UX)
-             window.location.href = dataUrl;
+             console.error("Gagal membuka tab baru. Pastikan pop-up diizinkan.");
         }
     }
 };
@@ -773,15 +782,20 @@ const ReEditModal = ({ isOpen, onClose, originalItem, onUpdateImage, colors }) =
 
         } catch (error) {
             console.error("Regenerate failed:", error);
-            alert(`Gagal meregenerasi gambar: ${error.message}.`);
+            // alert(`Gagal meregenerasi gambar: ${error.message}.`); // Menghapus alert()
         } finally {
             setIsProcessing(false);
         }
     };
 
     return (
-        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm" onClick={isProcessing ? undefined : onClose}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl p-6" onClick={(e) => e.stopPropagation()}>
+        // PERBAIKAN 1: Padding luar lebih kecil di mobile (p-4 -> p-2)
+        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-2 backdrop-blur-sm" onClick={isProcessing ? undefined : onClose}>
+            {/* PERBAIKAN 2: Batas max-width dan max-height, serta overflow-y-auto agar bisa digulir */}
+            <div 
+                className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[95vh] overflow-y-auto p-4 md:p-6" 
+                onClick={(e) => e.stopPropagation()}
+            >
                 <div className="flex justify-between items-center border-b pb-3 mb-4">
                     <h3 className="text-xl font-bold flex items-center gap-2" style={{ color: colors.text }}>
                         <Wand2 className="w-5 h-5" style={{ color: colors.accent }} /> Edit Gambar Lanjutan
@@ -792,15 +806,18 @@ const ReEditModal = ({ isOpen, onClose, originalItem, onUpdateImage, colors }) =
                 <div className="flex flex-col md:flex-row gap-6">
                     {/* Kolom Kiri: Image Brush Overlay */}
                     <div className="w-full md:w-1/2 flex flex-col items-center">
-                        <p className="text-sm font-semibold mb-2 flex items-center gap-1">
+                        <p className="text-sm font-semibold mb-2 flex items-center gap-1 text-center">
                             <PenTool className="w-4 h-4 text-gray-500"/> Gambar Asli ({originalItem.index + 1}) - Tandai area yang ingin diedit
                         </p>
-                        <ImageBrushOverlay
-                            imageUrl={originalItem.image}
-                            onMaskChange={setMaskDataURL}
-                            colors={colors}
-                            isProcessing={isProcessing}
-                        />
+                        {/* PERBAIKAN 3: Wrapper dengan max-height di mobile agar tidak memotong */}
+                        <div className="w-full max-h-[60vh] md:max-h-[unset] flex items-center justify-center"> 
+                            <ImageBrushOverlay
+                                imageUrl={originalItem.image}
+                                onMaskChange={setMaskDataURL}
+                                colors={colors}
+                                isProcessing={isProcessing}
+                            />
+                        </div>
                          {maskDataURL && (
                             <div className="mt-2 text-xs text-green-600 flex items-center gap-1">
                                 <CheckSquare className="w-3 h-3"/> Masking aktif. AI akan fokus pada area yang ditandai.
@@ -843,35 +860,52 @@ Contoh: 'Ganti bunga menjadi mawar ungu tua' atau 'Tambahkan cahaya hangat dari 
 
 // --- KOMPONEN TANDA TANGAN ---
 
-const SignaturePad = ({ label, onSave, onClear, signatureData, colors }) => {
-    const canvasRef = useRef(null);
+// NEW: Pure Canvas Drawing Element (The actual drawing logic, lines 538-608 logic split out)
+const SignatureDrawingElement = React.forwardRef(({ signatureData, onDrawEnd, colors, width = 300, height = 128 }, ref) => {
     const [isDrawing, setIsDrawing] = useState(false);
 
     useEffect(() => {
-        const canvas = canvasRef.current;
-        if (canvas) {
-            const ctx = canvas.getContext('2d');
-            ctx.lineWidth = 2;
-            ctx.lineCap = 'round';
-            ctx.strokeStyle = '#000000';
+        const canvas = ref.current;
+        if (!canvas) return;
+        
+        // Ensure canvas dimensions are set for pixel density
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        ctx.lineWidth = 3; // Slightly thicker brush
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#000000';
+        
+        ctx.clearRect(0, 0, width, height);
+
+        if (signatureData) {
+            const img = new Image();
+            img.onload = () => {
+                // Draw to fit (contain) the canvas area
+                const ratio = Math.min(width / img.width, height / img.height);
+                const newWidth = img.width * ratio;
+                const newHeight = img.height * ratio;
+                const x = (width - newWidth) / 2;
+                const y = (height - newHeight) / 2;
+                ctx.drawImage(img, x, y, newWidth, newHeight);
+            };
+            img.src = signatureData;
         }
-    }, []);
+    }, [signatureData, ref, width, height]);
 
     const getPos = (e) => {
-        const canvas = canvasRef.current;
+        const canvas = ref.current;
         const rect = canvas.getBoundingClientRect();
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-        return {
-            x: clientX - rect.left,
-            y: clientY - rect.top
-        };
+        return { x: clientX - rect.left, y: clientY - rect.top };
     };
 
     const startDrawing = (e) => {
         setIsDrawing(true);
         const pos = getPos(e);
-        const ctx = canvasRef.current.getContext('2d');
+        const ctx = ref.current.getContext('2d');
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y);
     };
@@ -880,7 +914,7 @@ const SignaturePad = ({ label, onSave, onClear, signatureData, colors }) => {
         if (!isDrawing) return;
         e.preventDefault(); // Prevent scrolling on touch
         const pos = getPos(e);
-        const ctx = canvasRef.current.getContext('2d');
+        const ctx = ref.current.getContext('2d');
         ctx.lineTo(pos.x, pos.y);
         ctx.stroke();
     };
@@ -888,54 +922,133 @@ const SignaturePad = ({ label, onSave, onClear, signatureData, colors }) => {
     const stopDrawing = () => {
         if (isDrawing) {
             setIsDrawing(false);
-            const canvas = canvasRef.current;
-            onSave(canvas.toDataURL());
+            onDrawEnd(ref.current.toDataURL('image/png'));
         }
+    };
+    
+    return (
+        <canvas
+            ref={ref}
+            className="w-full h-full cursor-crosshair touch-none"
+            onMouseDown={startDrawing}
+            onMouseMove={draw}
+            onMouseUp={stopDrawing}
+            onMouseLeave={stopDrawing}
+            onTouchStart={startDrawing}
+            onTouchMove={draw}
+            onTouchEnd={stopDrawing}
+        />
+    );
+});
+
+// NEW: Modal Component for Large Screen/Mobile Draw Area (Dihapus dari ItemChecker, tapi dipertahankan untuk referensi)
+const SignatureModal = ({ isOpen, onClose, label, signatureData, onSave, onClear, colors }) => {
+    if (!isOpen) return null;
+    
+    // Use local state to manage the drawn signature before saving (commit on 'Simpan')
+    const [tempSignature, setTempSignature] = useState(signatureData);
+    const drawingRef = useRef(null);
+
+    // Update local state when signatureData changes (e.g., if parent cleared)
+    useEffect(() => {
+        setTempSignature(signatureData);
+    }, [signatureData]);
+
+    const handleClear = () => {
+        onClear(); // Clear parent state immediately (sets signatureData to null)
+        setTempSignature(null); // Clear local state for a fresh start in the modal
     };
 
-    const clearCanvas = () => {
-        const canvas = canvasRef.current;
-        if (canvas) {
-            const ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
-        onClear();
+    const handleSave = () => {
+        onSave(tempSignature); // Commit the drawn signature to parent state
+        onClose();
     };
+
+    return (
+        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm" onClick={onClose}>
+            <div 
+                className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[95vh] overflow-y-auto p-4 md:p-6" 
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="flex justify-between items-center border-b pb-3 mb-4">
+                    <h3 className="text-xl font-bold" style={{ color: colors.text }}>Tanda Tangan Digital ({label})</h3>
+                    <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-1"><X className="w-6 h-6" /></button>
+                </div>
+                
+                {/* Canvas Area: Large and responsive with 3:1 aspect ratio */}
+                <div className="relative w-full aspect-[3/1] mb-4 border-2 border-dashed rounded-xl overflow-hidden" style={{ borderColor: colors.supporting }}>
+                    <SignatureDrawingElement 
+                        ref={drawingRef}
+                        signatureData={tempSignature}
+                        onDrawEnd={setTempSignature} // Update local state on drawing stop
+                        colors={colors}
+                        width={600} // High pixel dimensions for quality
+                        height={200}
+                    />
+                    <div className="absolute top-2 right-2 text-xs text-gray-400 pointer-events-none">Area Tanda Tangan</div>
+                    <div className="absolute bottom-2 left-2 text-[10px] text-gray-400 pointer-events-none">Tanda tangan disini ({label})</div>
+                </div>
+                
+                <div className="flex gap-4">
+                    <button 
+                        onClick={handleClear} 
+                        className="flex-1 py-3 rounded-full text-red-600 border border-red-300 hover:bg-red-50 transition font-semibold flex items-center justify-center gap-2"
+                    >
+                        <Eraser className="w-4 h-4" /> Hapus Goresan
+                    </button>
+                    <button 
+                        onClick={handleSave} 
+                        disabled={!tempSignature}
+                        className={`flex-1 py-3 rounded-full text-white font-bold transition ${!tempSignature ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02] shadow-md'}`}
+                        style={{ backgroundColor: colors.primary }}
+                    >
+                        <CheckSquare className="w-4 h-4" /> Simpan Tanda Tangan
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+// NEW: Responsive Signature Pad Wrapper (Updated to remove modal and increase mobile height)
+const SignaturePad = ({ label, onSave, onClear, signatureData, colors }) => {
+    
+    // Determine canvas height for drawing consistency (300x160 for mobile/default, 300x128 for large screen)
+    const canvasHeight = 160; 
 
     return (
         <div className="flex flex-col gap-2">
             <label className="text-sm font-semibold text-gray-700">{label}</label>
-            <div className="relative border-2 border-dashed rounded-xl bg-white overflow-hidden" style={{ borderColor: colors.supporting }}>
-                 {/* Jika sudah ada signature data (disimpan), tampilkan image saja agar tidak redraw */}
+            
+            {/* Unified responsive drawing area: h-40 on mobile, h-32 on desktop */}
+            <div className={`relative border-2 border-dashed rounded-xl bg-white overflow-hidden h-40 lg:h-32`} style={{ borderColor: colors.supporting }}>
+                 {/* Preview or Drawing Area */}
                  {signatureData ? (
-                     <div className="relative w-full h-32 bg-white flex items-center justify-center">
-                         <img src={signatureData} alt="Signature" className="h-full object-contain" />
+                     <div className="relative w-full h-full bg-white flex items-center justify-center">
+                         {/* max-h-full agar gambar tidak terpotong */}
+                         <img src={signatureData} className="max-h-full object-contain" alt="Sig" />
                          {/* Tombol Reset/Clear */}
-                         <button onClick={clearCanvas} className="absolute top-2 right-2 p-1 bg-gray-200 rounded hover:bg-red-100 text-red-500" title="Reset Tanda Tangan">
+                         <button onClick={onClear} className="absolute top-2 right-2 p-1 bg-gray-200 rounded hover:bg-red-100 text-red-500" title="Reset Tanda Tangan">
                              <Eraser className="w-4 h-4" />
                          </button>
                      </div>
                  ) : (
-                    <>
-                        <canvas
-                            ref={canvasRef}
-                            width={300}
-                            height={128}
-                            className="w-full h-32 cursor-crosshair touch-none"
-                            onMouseDown={startDrawing}
-                            onMouseMove={draw}
-                            onMouseUp={stopDrawing}
-                            onMouseLeave={stopDrawing}
-                            onTouchStart={startDrawing}
-                            onTouchMove={draw}
-                            onTouchEnd={stopDrawing}
-                        />
-                        <div className="absolute top-2 right-2 text-xs text-gray-400 pointer-events-none">Area Tanda Tangan</div>
-                        <div className="absolute bottom-2 left-2 text-[10px] text-gray-400 pointer-events-none">Tanda tangan disini</div>
-                    </>
+                    // Drawing view - set to full height of container
+                    <SignatureDrawingElement 
+                        signatureData={signatureData}
+                        onDrawEnd={onSave}
+                        colors={colors}
+                        width={300} // Drawing width for pixel ratio
+                        height={canvasHeight} // Drawing height for pixel ratio
+                        ref={useRef(null)} 
+                    />
                  )}
+                 <div className="absolute top-2 right-2 text-xs text-gray-400 pointer-events-none">Area Tanda Tangan</div>
+                 <div className="absolute bottom-2 left-2 text-[10px] text-gray-400 pointer-events-none">Tanda tangan disini</div>
             </div>
-             {signatureData && <div className="text-xs text-green-600 flex items-center gap-1"><CheckSquare className="w-3 h-3"/> Tanda tangan tersimpan</div>}
+            
+            {signatureData && <div className="text-xs text-green-600 flex items-center gap-1"><CheckSquare className="w-3 h-3"/> Tanda tangan tersimpan</div>}
         </div>
     );
 };
@@ -963,6 +1076,8 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
     const [clientSignature, setClientSignature] = useState(null);
     
     const [isGenerating, setIsGenerating] = useState(false);
+    
+    // --- OLD STATE/HANDLERS FOR MODAL REMOVED ---
 
     // Setup HTML2Canvas
     useEffect(() => {
@@ -1035,26 +1150,74 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
         }));
     };
 
+    // PERBAIKAN DOWNLOAD 1: Pastikan elemen #checker-preview yang diambil
+    // FIX MOBILE BLANK DOWNLOAD: Kloning dan pindahkan elemen ke luar layar jika tersembunyi
     const handleDownloadReport = async () => {
         if (!window.html2canvas) { console.error("Sistem sedang memuat html2canvas, coba lagi."); return; }
         setIsGenerating(true);
-        const element = document.getElementById('checker-preview');
+        
+        const previewElement = document.getElementById('checker-preview');
         const filename = `TandaTerima - ${clientName || 'Client'}.png`;
+        
+        if (!previewElement) {
+             console.error("Elemen preview tidak ditemukan.");
+             setIsGenerating(false);
+             return;
+        }
+
+        let elementToCapture = previewElement;
+        let clone = null;
+        
+        // Cek apakah elemen preview disembunyikan oleh parent di mobile
+        // Gunakan .closest() dengan class dari div yang tersembunyi ("hidden lg:block lg:w-1/2")
+        const previewContainer = previewElement.closest('.lg\\:w-1\\/2');
+        const isHidden = previewContainer && window.getComputedStyle(previewContainer).display === 'none';
+
+        if (isHidden) {
+            // Buat salinan (deep clone) element preview
+            clone = previewElement.cloneNode(true);
+            
+            // Atur posisi agar tidak terlihat tetapi tetap bisa dirender oleh html2canvas
+            clone.style.position = 'absolute';
+            clone.style.top = '0';
+            clone.style.left = '-9999px';
+            clone.style.zIndex = '-1';
+            clone.style.display = 'block'; // Pastikan terdisplay
+            clone.style.transform = 'none';
+            
+            document.body.appendChild(clone);
+            elementToCapture = clone;
+        }
+
         try {
-            // Force scroll to top to capture full height
+            // Force scroll to top to ensure full height capture
             window.scrollTo(0,0);
-            const canvas = await window.html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+            
+            // Menggunakan properti scale yang lebih tinggi untuk resolusi cetak yang lebih baik
+            const canvas = await window.html2canvas(elementToCapture, { 
+                scale: 3, 
+                useCORS: true, 
+                backgroundColor: '#ffffff' 
+            });
+            
             // Gunakan fungsi download aman untuk iOS
             safeDownload(canvas.toDataURL('image/png'), filename);
+            
         } catch (error) {
             console.error("Download failed:", error);
-            // Menghapus alert()
         } finally {
+            if (clone) {
+                document.body.removeChild(clone); 
+            }
             setIsGenerating(false);
         }
     };
+    
+    // --- OLD MODAL HANDLERS REMOVED ---
+
 
     return (
+        <>
         <div className="flex flex-col lg:flex-row gap-6 h-full relative">
             {/* --- LEFT SIDE: INPUT --- */}
             <div className="w-full lg:w-1/2 flex flex-col gap-6 overflow-y-auto pr-2 pb-20">
@@ -1155,16 +1318,19 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                                     </div>
                                     
                                     {item.photos.length > 0 ? (
-                                        <div className="grid grid-cols-3 gap-2 mt-2">
+                                        // PERBAIKAN 2: Ubah grid-cols-3 menjadi grid-cols-2 di mobile untuk menambah ruang catatan
+                                        <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
                                             {item.photos.map((photo, pIdx) => (
                                                 <div key={pIdx} className="relative border rounded-lg overflow-hidden bg-gray-50">
-                                                    <div className="aspect-[4/3] w-full bg-gray-200 mb-1 overflow-hidden rounded-sm">
-                                                        <img src={photo.url} className="w-full h-full object-cover" alt="Evidence" />
+                                                    {/* PERBAIKAN 2: Mengubah object-cover menjadi object-contain untuk menghindari pemotongan gambar */}
+                                                    <div className="aspect-[4/3] w-full bg-gray-200 mb-1 overflow-hidden rounded-sm flex items-center justify-center">
+                                                        <img src={photo.url} className="w-full h-full object-contain" alt="Evidence" />
                                                     </div>
                                                     <input 
                                                         type="text" 
                                                         placeholder="Catatan (mis: lecet, noda)" 
-                                                        className="w-full p-1.5 text-xs bg-transparent border-t outline-none"
+                                                        // PERBAIKAN 2: Penyesuaian ukuran input
+                                                        className="w-full px-2 py-1.5 text-sm bg-transparent border-t outline-none"
                                                         value={photo.note}
                                                         onChange={(e) => handleUpdatePhotoNote(item.id, pIdx, e.target.value)}
                                                     />
@@ -1186,6 +1352,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                         <PenTool className="w-4 h-4"/> Tanda Tangan
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         {/* PERBAIKAN 3: Menggunakan SignaturePad yang sudah dimodifikasi tanpa modal */}
                         <SignaturePad 
                             label={`Pihak ${brandName || 'Vendor'}`}
                             signatureData={brandSignature}
@@ -1193,6 +1360,7 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                             onClear={() => setBrandSignature(null)}
                             colors={colors}
                         />
+                         {/* PERBAIKAN 3: Menggunakan SignaturePad yang sudah dimodifikasi tanpa modal */}
                         <SignaturePad 
                             label={`Pihak Klien (${clientName || 'Pelanggan'})`}
                             signatureData={clientSignature}
@@ -1205,16 +1373,9 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
             </div>
 
             {/* --- RIGHT SIDE: PREVIEW --- */}
-            <div className="w-full lg:w-1/2 bg-gray-100 p-4 rounded-xl overflow-y-auto flex flex-col items-center relative pb-20">
-                 <button
-                    onClick={handleDownloadReport}
-                    disabled={isGenerating}
-                    className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200"
-                    style={{ backgroundColor: colors.primary, color: 'white' }}
-                    title="Simpan/Bagikan Laporan"
-                >
-                    {isGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : (navigator.canShare ? <Share2 className="w-6 h-6" /> : <Download className="w-6 h-6" />)}
-                </button>
+            {/* PERBAIKAN 1: Sembunyikan di mobile (hidden) dan hanya tampil di layar besar (lg:block) */}
+            <div className="hidden lg:block lg:w-1/2 bg-gray-100 p-4 rounded-xl overflow-y-auto flex flex-col items-center relative pb-20">
+                 {/* DOWNLOAD BUTTON DIPINDAH KELUAR */}
 
                 {/* DYNAMIC PAPER PREVIEW */}
                 {/* PERBAIKAN MOBILE: Tambahkan overflow-x-auto untuk container preview */}
@@ -1277,8 +1438,9 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                                                     <div className="grid grid-cols-3 gap-2 mt-2">
                                                         {item.photos.map((photo, pIdx) => (
                                                             <div key={pIdx} className="relative border rounded-lg overflow-hidden bg-gray-50">
-                                                                <div className="aspect-[4/3] w-full bg-gray-200 mb-1 overflow-hidden rounded-sm">
-                                                                    <img src={photo.url} className="w-full h-full object-cover" alt="Evidence" />
+                                                                {/* PERBAIKAN 2: Mengubah object-cover menjadi object-contain di preview dokumen */}
+                                                                <div className="aspect-[4/3] w-full bg-gray-200 mb-1 overflow-hidden rounded-sm flex items-center justify-center">
+                                                                    <img src={photo.url} className="w-full h-full object-contain" alt="Evidence" />
                                                                 </div>
                                                                 <p className="text-[10px] text-gray-600 leading-tight min-h-[2.5em]">
                                                                     {photo.note ? `"${photo.note}"` : '-'}
@@ -1327,6 +1489,20 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
                 </div>
             </div>
         </div>
+        
+        {/* DOWNLOAD BUTTON - Dipindahkan keluar dari div preview agar muncul di mobile */}
+        <button
+            onClick={handleDownloadReport}
+            disabled={isGenerating}
+            className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200"
+            style={{ backgroundColor: colors.primary, color: 'white' }}
+            title="Unduh Laporan (PNG)"
+        >
+            {isGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Download className="w-6 h-6" />}
+        </button>
+
+        {/* --- Signature Modal Render (Dihapus dari sini) --- */}
+        </>
     );
 };
 
@@ -1364,19 +1540,63 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
     const total = subtotal;
     const formatRupiah = (number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
 
+    // PERBAIKAN DOWNLOAD 2: Pastikan elemen #invoice-preview yang diambil
+    // FIX MOBILE BLANK DOWNLOAD: Kloning dan pindahkan elemen ke luar layar jika tersembunyi
     const handleDownloadImage = async () => {
         if (!window.html2canvas) { console.error("Sedang memuat modul gambar, silakan coba 2 detik lagi."); return; }
         setIsImageGenerating(true);
-        const element = document.getElementById('invoice-preview');
+        
+        const previewElement = document.getElementById('invoice-preview');
         const filename = `Invoice - ${brandName || 'Brand'} - ${clientName || 'Customer'}.png`;
+        
+        if (!previewElement) {
+             console.error("Elemen preview tidak ditemukan.");
+             setIsImageGenerating(false);
+             return;
+        }
+
+        let elementToCapture = previewElement;
+        let clone = null;
+        
+        // Cek apakah elemen preview disembunyikan oleh parent di mobile
+        const previewContainer = previewElement.closest('.lg\\:w-1\\/2');
+        const isHidden = previewContainer && window.getComputedStyle(previewContainer).display === 'none';
+
+        if (isHidden) {
+            // Buat salinan (deep clone) element preview
+            clone = previewElement.cloneNode(true);
+            
+            // Atur posisi agar tidak terlihat tetapi tetap bisa dirender oleh html2canvas
+            clone.style.position = 'absolute';
+            clone.style.top = '0';
+            clone.style.left = '-9999px';
+            clone.style.zIndex = '-1';
+            clone.style.display = 'block'; // Pastikan terdisplay
+            clone.style.transform = 'none';
+
+            document.body.appendChild(clone);
+            elementToCapture = clone;
+        }
+
         try {
-            const canvas = await window.html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+            // Force scroll to top (walaupun tidak mutlak perlu di modul ini)
+            window.scrollTo(0,0);
+            
+            const canvas = await window.html2canvas(elementToCapture, { 
+                scale: 3, 
+                useCORS: true, 
+                backgroundColor: '#ffffff' 
+            });
+            
             // Gunakan fungsi download aman untuk iOS
             safeDownload(canvas.toDataURL('image/png'), filename);
+            
         } catch (error) {
             console.error("Gagal membuat gambar:", error);
-            // Menghapus alert()
         } finally {
+            if (clone) {
+                document.body.removeChild(clone);
+            }
             setIsImageGenerating(false);
         }
     };
@@ -1464,10 +1684,10 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
                 </div>
             </div>
 
-            <div className="w-full lg:w-1/2 bg-gray-100 p-4 rounded-xl overflow-y-auto flex flex-col items-center relative pb-20">
-                <button onClick={handleDownloadImage} disabled={isImageGenerating} className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200" style={{ backgroundColor: colors.primary, color: 'white' }} title="Simpan/Bagikan Invoice">
-                    {isImageGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : (navigator.canShare ? <Share2 className="w-6 h-6" /> : <Download className="w-6 h-6" />)}
-                </button>
+            {/* PERBAIKAN 1: Sembunyikan di mobile (hidden) dan hanya tampil di layar besar (lg:block) */}
+            <div className="hidden lg:block lg:w-1/2 bg-gray-100 p-4 rounded-xl overflow-y-auto flex flex-col items-center relative pb-20">
+                {/* DOWNLOAD BUTTON DIPINDAH KELUAR */}
+                
                 {/* PERBAIKAN MOBILE: Container overflow-x-auto untuk preview */}
                 <div className="w-full overflow-x-auto">
                     <div id="invoice-preview" className="bg-white w-[210mm] min-w-[210mm] min-h-[297mm] p-8 shadow-2xl text-sm leading-relaxed text-gray-800 relative mt-4 lg:mt-0 box-border mx-auto">
@@ -1531,6 +1751,16 @@ const InvoiceMaker = ({ colors, APP_LOGO_URL }) => {
                     </div>
                 </div>
             </div>
+            {/* DOWNLOAD BUTTON - Dipindahkan keluar dari div preview agar muncul di mobile */}
+            <button
+                onClick={handleDownloadImage}
+                disabled={isImageGenerating}
+                className="fixed bottom-8 right-8 z-40 p-4 rounded-full shadow-2xl transition hover:scale-110 flex items-center justify-center cursor-pointer hover:shadow-green-200"
+                style={{ backgroundColor: colors.primary, color: 'white' }}
+                title="Simpan Invoice sebagai Gambar (PNG)"
+            >
+                {isImageGenerating ? <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Download className="w-6 h-6" />}
+            </button>
         </div>
     );
 };
@@ -1598,12 +1828,27 @@ const FlowerBouquetForm = ({ onGenerate, isGenerating, colors }) => {
                 }
                 // --- END FIX ---
 
+                // --- PERUBAHAN PENTING: Variasi Pencahayaan & Komposisi ---
                 prompt += `
                 **ENVIRONMENT:**
-                - **Background:** Soft, neutral studio background (light grey or cream) to highlight the flowers.
-                - **Lighting:** Soft natural window light.
-                - **Composition:** Centered, showing the full bouquet arrangement.
+                `;
+                
+                if (i === 1) {
+                    prompt += `
+                    - **Background:** Soft, neutral studio background (light grey or cream) to highlight the flowers.
+                    - **Lighting:** Soft natural window light.
+                    - **Composition:** Centered, showing the full bouquet arrangement.
+                    `;
+                } else {
+                    prompt += `
+                    - **Background:** Darker, textured backdrop (velvet or moody concrete) or a sunlit outdoor setting (Golden Hour).
+                    - **Lighting:** Dramatic, directional light (e.g., single spotlight or warm evening sun).
+                    - **Composition:** Dynamic, slightly off-center, with more depth of field (bokeh).
+                    `;
+                }
+                // --- AKHIR PERUBAHAN PENTING ---
 
+                prompt += `
                 **QUALITY:** Sharp focus, vibrant colors, detailed textures of petals and wrapping paper.
                 `;
 
@@ -1711,7 +1956,7 @@ const FlowerBouquetResults = ({ results, isLoading, colors, setEditContext }) =>
                          {/* Tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                             <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
                             <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
                         <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -1749,7 +1994,7 @@ const FlowerBouquetResults = ({ results, isLoading, colors, setEditContext }) =>
                         <div className="absolute bottom-4 right-4 flex gap-3">
                             {/* Tombol Download & Edit di Modal */}
                              <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
+                                <Download className="w-4 h-4" /> Download
                             </button>
                             <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
@@ -1793,11 +2038,12 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
     }, []);
 
     const [config, setConfig] = useState(initialConfig);
-    // --- AKHIR PERUBAHAN ---
-
+    // [START]: Perubahan State untuk Nama Pasangan
     const [nominalIsi, setNominalIsi] = useState('');
-    const [namaPasangan, setNamaPasangan] = useState('');
-    const [weddingDate, setWeddingDate] = useState(''); // New state for wedding date
+    const [namaPria, setNamaPria] = useState('');
+    const [namaWanita, setNamaWanita] = useState('');
+    const [weddingDate, setWeddingDate] = useState('');
+    // [END]: Perubahan State untuk Nama Pasangan
     const [referenceFiles, setReferenceFiles] = useState([]);
     const [detailTambahan, setDetailTambahan] = useState('');
 
@@ -1834,6 +2080,11 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
             const formattedDate = weddingDate 
                 ? new Date(weddingDate).toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }) 
                 : 'No date specified, use simple calligraphy date style';
+            
+            // [START FIX] Mengambil nama tanpa prefix untuk visual
+            const namesPria = namaPria.trim() || 'Nama Pria';
+            const namesWanita = namaWanita.trim() || 'Nama Wanita';
+            // [END FIX]
 
             const promises = [1, 2].map(async (i) => {
                 const imageParts = [];
@@ -1847,9 +2098,12 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
                 
                 **CONTENT:**
                 - **Isi Mahar:** ${nominalIsi || 'Artistic arrangement of money/gold'}
-                - **Names on Frame:** ${namaPasangan || 'Bride & Groom Names'}
+                - **Nama Pengantin Pria (Visual Text):** ${namesPria}
+                - **Nama Pengantin Wanita (Visual Text):** ${namesWanita}
                 - **Wedding Date:** ${formattedDate}
                 
+                **INSTRUCTION VISUAL TEXT:** Render the names and date on the mahar. DO NOT include the descriptive prefixes (e.g., "Nama Pengantin Pria:") in the final visual image output. Use elegant calligraphy style, typically seen on Indonesian mahar.
+
                 **DESIGN SPECS:**
                 `;
                 
@@ -1916,16 +2170,22 @@ const MaharDesignForm = ({ onGenerate, isGenerating, colors }) => {
                             <label className="text-xs text-gray-500 mb-1 block">Nominal / Isi Mahar</label>
                             <input type="text" placeholder="Misal: Rp 1.000.000 tunai dan 10 gram emas" className="w-full p-2 border rounded-lg text-sm" value={nominalIsi} onChange={(e) => setNominalIsi(e.target.value)} />
                         </div>
+                        {/* [START]: Perubahan Layout Input Nama Pasangan */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Nama Pasangan</label>
-                                <input type="text" placeholder="Misal: Budi & Ani" className="w-full p-2 border rounded-lg text-sm" value={namaPasangan} onChange={(e) => setNamaPasangan(e.target.value)} />
+                                <label className="text-xs text-gray-500 mb-1 block">Nama Pengantin Pria</label>
+                                <input type="text" placeholder="Misal: Budi" className="w-full p-2 border rounded-lg text-sm" value={namaPria} onChange={(e) => setNamaPria(e.target.value)} />
                             </div>
                             <div>
-                                <label className="text-xs text-gray-500 mb-1 block">Tanggal Pernikahan</label>
-                                <input type="date" className="w-full p-2 border rounded-lg text-sm" value={weddingDate} onChange={(e) => setWeddingDate(e.target.value)} />
+                                <label className="text-xs text-gray-500 mb-1 block">Nama Pengantin Wanita</label>
+                                <input type="text" placeholder="Misal: Ani" className="w-full p-2 border rounded-lg text-sm" value={namaWanita} onChange={(e) => setNamaWanita(e.target.value)} />
                             </div>
                         </div>
+                        <div>
+                             <label className="text-xs text-gray-500 mb-1 block">Tanggal Pernikahan</label>
+                             <input type="date" className="w-full p-2 border rounded-lg text-sm" value={weddingDate} onChange={(e) => setWeddingDate(e.target.value)} />
+                        </div>
+                        {/* [END]: Perubahan Layout Input Nama Pasangan */}
                      </div>
                  </div>
 
@@ -2006,7 +2266,7 @@ const MaharDesignResults = ({ results, isLoading, colors, setEditContext }) => {
                         {/* MODIFIKASI: Mengganti overlay dengan tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                             <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
                              <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
                         <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -2045,7 +2305,7 @@ const MaharDesignResults = ({ results, isLoading, colors, setEditContext }) => {
                         {/* Tombol Download & Edit di dalam modal (New Style) */}
                         <div className="absolute bottom-4 right-4 flex gap-3">
                              <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
+                                <Download className="w-4 h-4" /> Download
                             </button>
                              <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
@@ -2276,15 +2536,21 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                 // Automatic Camera Angle Guidance (Since User Control is Removed)
                 promptParts.push(`- **CAMERA ANGLE:** Choose the most aesthetic, professional angle for this specific object (e.g., slightly High Angle for trays, Eye Level for bouquets).`);
 
-                // Composition & Safe Zones for Cropping
-                let layoutIntent = "Center composition.";
-                if (config.ImageLayout.value.includes('9:16')) {
-                    layoutIntent = "Vertical Portrait (9:16) Intention. GENERATE A SQUARE IMAGE, BUT visualize the subject within a central vertical 9:16 strip (Safe Zone). Leave the sides empty/background so cropping to 9:16 preserves the whole subject.";
-                } else if (config.ImageLayout.value.includes('4:3')) {
-                    layoutIntent = "Horizontal Landscape (4:3) Intention. Keep subject within the central 4:3 area so cropping top/bottom works.";
-                } else if (config.ImageLayout.value.includes('3:4')) {
-                    layoutIntent = "Vertical Portrait (3:4) Intention. Keep subject within central 3:4 area.";
+                // Composition & Safe Zones for Cropping (REVISED LOGIC HERE)
+                const selectedLayout = config.ImageLayout.value;
+                let layoutIntent = "Center composition. Ensure the entire product/subject is clearly visible and placed within the frame, with adequate negative space around it. The image output must be square (1:1).";
+                
+                if (selectedLayout.includes('9:16')) {
+                    // Target is tall (9/16 = 0.5625 ratio)
+                    layoutIntent = "Vertical Portrait (9:16) Intention. The composition MUST prioritize the visibility of the whole product, ensuring it is contained within the central 9:16 vertical area of the square output. Add generous horizontal negative space/background to the left and right to avoid cropping.";
+                } else if (selectedLayout.includes('4:3')) {
+                    // Target is wide (4/3 = 1.33 ratio)
+                    layoutIntent = "Horizontal Landscape (4:3) Intention. The composition MUST prioritize the visibility of the whole product, ensuring it is contained within the central 4:3 horizontal area of the square output. Add generous vertical negative space/background above and below to avoid cropping.";
+                } else if (selectedLayout.includes('3:4')) {
+                    // Target is tall (3/4 = 0.75 ratio)
+                    layoutIntent = "Vertical Portrait (3:4) Intention. The composition MUST prioritize the visibility of the whole product, ensuring it is contained within the central 3:4 vertical area of the square output. Add horizontal negative space/background to the left and right to avoid cropping.";
                 }
+                
                 promptParts.push(`- **COMPOSITION:** ${layoutIntent}`);
 
                 // --- USER MANDATORY OVERRIDE ---
@@ -2619,7 +2885,7 @@ const MagicPhotoResults = ({ results, isLoading, colors, setEditContext }) => {
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                             {/* Memperbarui handler untuk modal view */}
                             <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                            <button onClick={() => handleDownloadCropped(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
+                            <button onClick={() => handleDownloadCropped(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
                             <button onClick={() => handleEdit(item, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                         </div>
                         <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -2665,7 +2931,7 @@ const MagicPhotoResults = ({ results, isLoading, colors, setEditContext }) => {
                          {/* Tombol Download & Edit di Modal */}
                         <div className="absolute bottom-4 right-4 flex gap-3">
                             <button onClick={(e) => { e.stopPropagation(); handleDownloadCropped(currentItem, viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
+                                <Download className="w-4 h-4" /> Download
                             </button>
                             <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(currentItem, viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
@@ -2798,7 +3064,7 @@ const ArrangementIdeaForm = ({ onGenerate, isGenerating, colors }) => {
                 - **Prop Density:** ${propDensity}
                 - **Key Decoration:** ${decorElement}
 
-            4.  **Synthesis & Composition Strategy:** - Mentally place the "Hantaran Items" into the "${container}" using the "${itemArrangement}" layout. 
+            4.  **Synthesis & Composition Strategy:** - Mentally place the "Hantaran Items" into the "${container}" menggunakan the "${itemArrangement}" layout. 
                 - Apply decoration elements (${decorElement}) consistent with the "${theme}" theme dan "${culture}" culture. 
                 - Ensure the "${propDensity}" is respected (don't overcrowd if 'Minimalist', don't leave empty if 'High Density').
                 - Harmonize the background (${background}) with the palette.
@@ -2942,7 +3208,7 @@ const ArrangementIdeaResults = ({ results, isLoading, colors, setEditContext }) 
                              {/* Tombol Maximize, Download, dan Edit (Meniru Magic Photo) */}
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-3">
                                 <button onClick={() => { setViewIndex(idx); setIsModalOpen(true); }} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Lihat"><Maximize2 className="w-5 h-5" /></button>
-                                <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title={navigator.canShare ? "Bagikan" : "Download"}><Share2 className="w-5 h-5" /></button>
+                                <button onClick={() => handleDownload(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Download"><Download className="w-5 h-5" /></button>
                                 <button onClick={() => handleEdit(img, idx)} className="p-2 bg-white/20 backdrop-blur rounded-full text-white hover:bg-white/40" title="Edit Lanjutan"><Wand2 className="w-5 h-5" /></button>
                             </div>
                             <div className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">Var {idx + 1}</div>
@@ -2980,7 +3246,7 @@ const ArrangementIdeaResults = ({ results, isLoading, colors, setEditContext }) 
                         <img src={images[viewIndex]} alt="Full View" className="max-h-[85vh] w-auto object-contain rounded-lg shadow-2xl aspect-square" />
                         <div className="absolute bottom-4 right-4 flex gap-3">
                              <button onClick={(e) => { e.stopPropagation(); handleDownload(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
-                                <Share2 className="w-4 h-4" /> {navigator.canShare ? "Bagikan / Simpan" : "Download"}
+                                <Download className="w-4 h-4" /> Download
                             </button>
                             <button onClick={(e) => { e.stopPropagation(); setIsModalOpen(false); handleEdit(images[viewIndex], viewIndex); }} className="bg-white/90 hover:bg-white text-gray-800 px-4 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
                                 <Wand2 className="w-4 h-4" /> Edit
