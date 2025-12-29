@@ -5,8 +5,14 @@ import {
   ClipboardList, Gem, Feather, Leaf, Gift, AlertTriangle, FileText, Plus, Trash2, Printer,
   Download, ZoomIn, ZoomOut, Maximize2, RotateCcw, FileImage, User, Hand,
   ScrollText, PanelRight, PanelLeft, ClipboardCheck, PenTool, CheckSquare,
-  Calendar, StickyNote, Eraser, Flower, ChevronLeft, Coins, Sun
+  Calendar, StickyNote, Eraser, Flower, ChevronLeft, Coins, Sun, Clock
 } from 'lucide-react';
+
+// FIREBASE IMPORTS (MANDATORY for persistence)
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+// PERBAIKAN: Menambahkan doc, updateDoc, deleteDoc untuk fungsi CRUD
+import { getFirestore, doc, addDoc, updateDoc, deleteDoc, onSnapshot, collection, query, orderBy, Timestamp } from 'firebase/firestore';
 
 // --- CONFIGURASI & DATA KONSTAN ---
 
@@ -25,9 +31,12 @@ const MODULES = [
   { name: 'Inspiration', icon: Gift, id: 'arrangement' }, // Urutan ke-2, Ikon Gift
   { name: 'Mahar Design', icon: Layout, id: 'mahar' }, // Urutan ke-3, Ikon Layout
   { name: 'Flower Bouquet', icon: Flower, id: 'bouquet' }, 
+  { name: 'Order Tracker', icon: Calendar, id: 'tracker' }, // NEW MODULE
   { name: 'Item Checker', icon: ClipboardCheck, id: 'checker' }, // Urutan ke-5
   { name: 'Invoice Maker', icon: ScrollText, id: 'invoice' }, // Urutan ke-6
 ];
+
+const ORDER_STATUSES = ['Pending', 'Confirmed', 'Processing', 'Ready', 'Completed', 'Cancelled'];
 
 const PRESET_OPTIONS = {
   decoration: {
@@ -193,6 +202,14 @@ const PRESET_OPTIONS = {
 };
 
 const APP_LOGO_URL = "https://lh3.googleusercontent.com/d/1LNdn8mDbGAUzicCvbOwYPCyFjc4B6UhA";
+
+// Firestore Helper (Must be outside component scope to avoid re-creation)
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const getCollectionPath = (userId) => {
+    // Mandated private collection path
+    return `artifacts/${appId}/users/${userId}/orders`;
+};
+
 
 // --- GLOBAL HELPER: UNIVERSAL DOWNLOAD/SHARE (IOS & MOBILE FRIENDLY) ---
 // REVISI STRATEGI: Menggunakan pendekatan Hybrid (Web Share API > Blob URL > New Tab)
@@ -941,75 +958,6 @@ const SignatureDrawingElement = React.forwardRef(({ signatureData, onDrawEnd, co
     );
 });
 
-// NEW: Modal Component for Large Screen/Mobile Draw Area (Dihapus dari ItemChecker, tapi dipertahankan untuk referensi)
-const SignatureModal = ({ isOpen, onClose, label, signatureData, onSave, onClear, colors }) => {
-    if (!isOpen) return null;
-    
-    // Use local state to manage the drawn signature before saving (commit on 'Simpan')
-    const [tempSignature, setTempSignature] = useState(signatureData);
-    const drawingRef = useRef(null);
-
-    // Update local state when signatureData changes (e.g., if parent cleared)
-    useEffect(() => {
-        setTempSignature(signatureData);
-    }, [signatureData]);
-
-    const handleClear = () => {
-        onClear(); // Clear parent state immediately (sets signatureData to null)
-        setTempSignature(null); // Clear local state for a fresh start in the modal
-    };
-
-    const handleSave = () => {
-        onSave(tempSignature); // Commit the drawn signature to parent state
-        onClose();
-    };
-
-    return (
-        <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm" onClick={onClose}>
-            <div 
-                className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[95vh] overflow-y-auto p-4 md:p-6" 
-                onClick={(e) => e.stopPropagation()}
-            >
-                <div className="flex justify-between items-center border-b pb-3 mb-4">
-                    <h3 className="text-xl font-bold" style={{ color: colors.text }}>Tanda Tangan Digital ({label})</h3>
-                    <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-1"><X className="w-6 h-6" /></button>
-                </div>
-                
-                {/* Canvas Area: Large and responsive with 3:1 aspect ratio */}
-                <div className="relative w-full aspect-[3/1] mb-4 border-2 border-dashed rounded-xl overflow-hidden" style={{ borderColor: colors.supporting }}>
-                    <SignatureDrawingElement 
-                        ref={drawingRef}
-                        signatureData={tempSignature}
-                        onDrawEnd={setTempSignature} // Update local state on drawing stop
-                        colors={colors}
-                        width={600} // High pixel dimensions for quality
-                        height={200}
-                    />
-                    <div className="absolute top-2 right-2 text-xs text-gray-400 pointer-events-none">Area Tanda Tangan</div>
-                    <div className="absolute bottom-2 left-2 text-[10px] text-gray-400 pointer-events-none">Tanda tangan disini ({label})</div>
-                </div>
-                
-                <div className="flex gap-4">
-                    <button 
-                        onClick={handleClear} 
-                        className="flex-1 py-3 rounded-full text-red-600 border border-red-300 hover:bg-red-50 transition font-semibold flex items-center justify-center gap-2"
-                    >
-                        <Eraser className="w-4 h-4" /> Hapus Goresan
-                    </button>
-                    <button 
-                        onClick={handleSave} 
-                        disabled={!tempSignature}
-                        className={`flex-1 py-3 rounded-full text-white font-bold transition ${!tempSignature ? 'opacity-50 cursor-not-allowed' : 'hover:scale-[1.02] shadow-md'}`}
-                        style={{ backgroundColor: colors.primary }}
-                    >
-                        <CheckSquare className="w-4 h-4" /> Simpan Tanda Tangan
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-};
-
 
 // NEW: Responsive Signature Pad Wrapper (Updated to remove modal and increase mobile height)
 const SignaturePad = ({ label, onSave, onClear, signatureData, colors }) => {
@@ -1049,6 +997,455 @@ const SignaturePad = ({ label, onSave, onClear, signatureData, colors }) => {
             </div>
             
             {signatureData && <div className="text-xs text-green-600 flex items-center gap-1"><CheckSquare className="w-3 h-3"/> Tanda tangan tersimpan</div>}
+        </div>
+    );
+};
+
+// FIX: Helper untuk memformat Date object ke format lokal YYYY-MM-DDTHH:MM
+// yang dibutuhkan oleh input[type="datetime-local"] tanpa pergeseran timezone.
+const formatDateForInput = (dateObj) => {
+    if (!dateObj || isNaN(dateObj.getTime())) return '';
+    const year = dateObj.getFullYear();
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    // Menggunakan waktu lokal (getHours/getMinutes)
+    const hour = String(dateObj.getHours()).padStart(2, '0');
+    const minute = String(dateObj.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hour}:${minute}`;
+};
+
+
+// --- MODULE: ORDER TRACKER (NEW MODULE) ---
+
+const OrderTracker = ({ colors, db, userId, isAuthReady }) => {
+    const [orders, setOrders] = useState([]);
+    const [currentDate, setCurrentDate] = useState(new Date());
+    const [selectedDay, setSelectedDay] = useState(null);
+    const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+    // PERBAIKAN 4: Tambah field phone ke state
+    const [newOrder, setNewOrder] = useState({ client: '', phone: '', service: '', date: '', status: ORDER_STATUSES[0] });
+    // NEW: State untuk order yang sedang diedit
+    const [editingOrder, setEditingOrder] = useState(null); 
+    // PERBAIKAN 2: State untuk konfirmasi hapus
+    const [confirmDelete, setConfirmDelete] = useState(null);
+
+    // --- FIREBASE REAL-TIME LISTENER ---
+    useEffect(() => {
+        if (!isAuthReady || !db || !userId) return;
+
+        const ordersColRef = collection(db, getCollectionPath(userId));
+        // Menggunakan query untuk mengambil semua data (akan disaring di frontend)
+        const q = query(ordersColRef, orderBy('date', 'desc'));
+        
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            const fetchedOrders = [];
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                // Konversi Firestore Timestamp ke Date object jika ada
+                const date = data.date instanceof Timestamp ? data.date.toDate() : new Date(data.date);
+                fetchedOrders.push({
+                    id: doc.id,
+                    ...data,
+                    date: date,
+                });
+            });
+            setOrders(fetchedOrders);
+        }, (error) => {
+            console.error("Error listening to orders:", error);
+        });
+
+        return () => unsubscribe();
+    }, [isAuthReady, db, userId]);
+
+    // --- CALENDAR LOGIC ---
+
+    const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+    const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    const numDays = endOfMonth.getDate();
+    const startDayOfWeek = startOfMonth.getDay(); // 0 for Sunday, 1 for Monday
+
+    const days = [];
+    // Isi hari-hari kosong di awal bulan
+    for (let i = 0; i < startDayOfWeek; i++) {
+        days.push(null);
+    }
+    // Isi hari-hari di bulan ini
+    for (let i = 1; i <= numDays; i++) {
+        const dayDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), i);
+        days.push(dayDate);
+    }
+
+    const nextMonth = () => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+    const prevMonth = () => setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+
+    const today = new Date();
+    const isSameDay = (date1, date2) => date1 && date2 && date1.getDate() === date2.getDate() && date1.getMonth() === date2.getMonth() && date1.getFullYear() === date2.getFullYear();
+    const isToday = (date) => isSameDay(date, today);
+
+    // Filter orders for the selected day
+    const ordersForSelectedDay = useMemo(() => {
+        if (!selectedDay) return [];
+        return orders.filter(order => isSameDay(order.date, selectedDay)).sort((a, b) => a.date - b.date);
+    }, [orders, selectedDay]);
+
+    // Group orders by day in the current month for badge count
+    const ordersInCurrentMonth = useMemo(() => {
+        const counts = {};
+        orders.forEach(order => {
+            if (order.date.getMonth() === currentDate.getMonth() && order.date.getFullYear() === currentDate.getFullYear()) {
+                const day = order.date.getDate();
+                counts[day] = (counts[day] || 0) + 1;
+            }
+        });
+        return counts;
+    }, [orders, currentDate]);
+
+    // --- CRUD HANDLERS ---
+    
+    const handleCloseModal = () => {
+        setIsAddModalOpen(false);
+        setEditingOrder(null);
+        setConfirmDelete(null); // Tutup konfirmasi hapus
+        // PERBAIKAN 4: Reset state dengan field phone
+        setNewOrder({ client: '', phone: '', service: '', date: '', status: ORDER_STATUSES[0] }); 
+    }
+
+    // Fungsi universal untuk membuka modal (Tambah atau Edit)
+    const handleOpenAddModal = (orderToEdit = null, date = null) => {
+        if (orderToEdit) {
+            // EDIT MODE
+            setEditingOrder(orderToEdit);
+            setNewOrder({
+                client: orderToEdit.client,
+                phone: orderToEdit.phone || '', // PERBAIKAN 4: Ambil data phone
+                service: orderToEdit.service,
+                // FIX BUG TANGGAL: Menggunakan format lokal untuk menghindari pergeseran hari
+                date: formatDateForInput(orderToEdit.date), 
+                status: orderToEdit.status,
+            });
+        } else {
+            // ADD MODE
+            // PERBAIKAN 3: Gunakan selectedDay jika ada, jika tidak, gunakan hari ini
+            let initialDate = date || today; 
+            
+            // FIX BUG TANGGAL: Jika tanggal datang dari kalender (date is not null), 
+            // kita harus clone objeknya karena setHours akan memutasi objek aslinya.
+            if (date) {
+                initialDate = new Date(date.getTime()); // Clone date
+                initialDate.setHours(9, 0, 0, 0); // Set default time to 09:00 AM local time
+            }
+
+            setEditingOrder(null);
+            setNewOrder({ 
+                client: '', 
+                phone: '', // PERBAIKAN 4: Tambahkan field phone
+                service: '', 
+                // FIX BUG TANGGAL: Menggunakan format lokal untuk menghindari pergeseran hari
+                date: formatDateForInput(initialDate), 
+                status: ORDER_STATUSES[0] 
+            });
+        }
+        setIsAddModalOpen(true);
+    };
+
+    // Fungsi universal untuk menambah atau mengedit order
+    const handleAddOrUpdateOrder = async (e) => {
+        e.preventDefault();
+        if (!newOrder.client || !newOrder.date) return;
+
+        try {
+            const orderPayload = {
+                client: newOrder.client,
+                phone: newOrder.phone, // PERBAIKAN 4: Tambahkan phone ke payload
+                service: newOrder.service,
+                status: newOrder.status,
+                // Simpan tanggal sebagai Firestore Timestamp
+                date: Timestamp.fromDate(new Date(newOrder.date)), 
+            };
+
+            if (editingOrder) {
+                // LOGIKA UPDATE (Ubah Order)
+                const orderDocRef = doc(db, getCollectionPath(userId), editingOrder.id);
+                await updateDoc(orderDocRef, orderPayload);
+            } else {
+                // LOGIKA TAMBAH (Order Baru)
+                orderPayload.createdAt = Timestamp.now(); 
+                await addDoc(collection(db, getCollectionPath(userId)), orderPayload);
+            }
+
+            handleCloseModal();
+            // Tetapkan hari yang dipilih ke tanggal order baru/yang diubah untuk refresh list
+            setSelectedDay(new Date(newOrder.date));
+
+        } catch (error) {
+            console.error(`Gagal ${editingOrder ? 'mengubah' : 'menambah'} order:`, error);
+            // Tampilkan pesan error custom di sini (bukan alert)
+        }
+    };
+    
+    // PERBAIKAN 2: Fungsi Delete Order (dipicu oleh konfirmasi)
+    const handleDeleteOrder = async (orderId) => {
+        if (!orderId) return;
+        
+        try {
+            await deleteDoc(doc(db, getCollectionPath(userId), orderId));
+            console.log("Order deleted successfully:", orderId);
+            setConfirmDelete(null); // Tutup konfirmasi setelah sukses
+        } catch (error) {
+            console.error("Gagal menghapus order:", error);
+        }
+    };
+    
+    // Fungsi untuk menampilkan konfirmasi (dipicu oleh tombol Trash2)
+    const handleConfirmDeleteClick = (orderId, clientName) => {
+        setConfirmDelete({ id: orderId, name: clientName });
+    };
+
+    // Helper untuk styling status
+    const getStatusStyle = (status) => {
+        switch (status) {
+            case 'Confirmed': return 'bg-blue-100 text-blue-800 border-blue-300';
+            case 'Processing': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+            case 'Ready': return 'bg-purple-100 text-purple-800 border-purple-300';
+            case 'Completed': return 'bg-green-100 text-green-800 border-green-300';
+            case 'Cancelled': return 'bg-red-100 text-red-800 border-red-300';
+            default: return 'bg-gray-100 text-gray-800 border-gray-300';
+        }
+    };
+    
+    // --- UI ELEMENTS ---
+    
+    if (!isAuthReady) {
+        return <div className="p-8 text-center text-lg text-gray-500">Memuat data pengguna...</div>;
+    }
+    
+    if (!db) {
+         return <div className="p-8 text-center text-lg text-red-500">Koneksi Database Gagal. Harap refresh halaman.</div>;
+    }
+
+    return (
+        <div className="p-4 md:p-6 flex flex-col gap-6">
+            <h2 className="text-3xl font-bold flex items-center gap-2" style={{ color: colors.text }}>
+                <Calendar className="w-6 h-6" style={{ color: colors.primary }} /> Order Tracker
+            </h2>
+
+            {/* Kontrol dan Kalender */}
+            <div className="bg-white p-6 rounded-xl shadow-md border border-gray-200 grid grid-cols-1 lg:grid-cols-2 gap-6">
+                
+                {/* Kolom Kiri: Kalender */}
+                <div className="flex flex-col">
+                    <div className="flex justify-between items-center mb-4">
+                        <button onClick={prevMonth} className="p-2 rounded-full hover:bg-gray-100 text-gray-600"><ChevronLeft className="w-5 h-5" /></button>
+                        <h3 className="text-xl font-bold" style={{ color: colors.text }}>
+                            {currentDate.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                        </h3>
+                        <button onClick={nextMonth} className="p-2 rounded-full hover:bg-gray-100 text-gray-600"><ChevronRight className="w-5 h-5" /></button>
+                    </div>
+
+                    <div className="grid grid-cols-7 text-center text-sm font-semibold text-gray-500 border-b pb-2 mb-2">
+                        {['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'].map(day => (
+                            <span key={day}>{day}</span>
+                        ))}
+                    </div>
+
+                    <div className="grid grid-cols-7 gap-1">
+                        {days.map((day, index) => {
+                            if (!day) return <div key={index} className="aspect-square"></div>;
+                            
+                            const dayNum = day.getDate();
+                            const orderCount = ordersInCurrentMonth[dayNum] || 0;
+                            const isCurrent = isSameDay(day, currentDate);
+                            const isSelected = isSameDay(day, selectedDay);
+                            const isTodayMarker = isToday(day);
+
+                            return (
+                                <div
+                                    key={day.toISOString()}
+                                    className={`relative aspect-square flex flex-col items-center justify-center p-1 rounded-lg cursor-pointer transition 
+                                        ${isSelected ? 'ring-2 ring-offset-2 scale-105' : 'hover:bg-gray-100'}
+                                    `}
+                                    style={{ 
+                                        // PERBAIKAN BACKGROUND: Mengganti background merah hari ini dengan warna primary yang lebih soft
+                                        border: isTodayMarker ? `2px solid ${colors.secondary}` : 'none', 
+                                        backgroundColor: isTodayMarker ? colors.primary + '15' : undefined, // Light primary color for today (15% opacity)
+                                        ringColor: colors.primary 
+                                    }}
+                                    onClick={() => setSelectedDay(day)}
+                                >
+                                    {/* FIX: Set warna teks merah kuat untuk hari ini */}
+                                    <span className={`text-sm font-medium ${isTodayMarker ? 'text-red-600 font-bold' : (isCurrent ? 'text-gray-800' : 'text-gray-400')}`}>{dayNum}</span>
+                                    {orderCount > 0 && (
+                                        <span className="absolute bottom-1 right-1 w-4 h-4 text-[10px] bg-red-500 text-white rounded-full flex items-center justify-center font-bold">{orderCount}</span>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                    
+                    <button 
+                        // PERBAIKAN 3: Menggunakan selectedDay (jika ada) untuk mengisi tanggal di modal
+                        onClick={() => handleOpenAddModal(null, selectedDay || today)} 
+                        className="mt-6 py-2 rounded-full text-white font-bold transition flex items-center justify-center gap-2 hover:opacity-90"
+                        style={{ backgroundColor: colors.primary }}
+                    >
+                        <Plus className="w-4 h-4" /> Tambah Order
+                    </button>
+                </div>
+
+                {/* Kolom Kanan: Detail Order Hari Ini */}
+                <div className="p-4 rounded-xl border border-dashed" style={{ borderColor: colors.supporting }}>
+                    <div className="flex justify-between items-center mb-4 border-b pb-2">
+                        <h3 className="text-xl font-bold flex items-center gap-2">
+                            <ClipboardList className="w-5 h-5" /> Detail Orders
+                        </h3>
+                         <span className="text-sm font-semibold text-gray-500">
+                             {selectedDay ? selectedDay.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) : 'Pilih tanggal'}
+                         </span>
+                    </div>
+
+                    {selectedDay && ordersForSelectedDay.length > 0 ? (
+                        <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                            {ordersForSelectedDay.map(order => (
+                                <div key={order.id} className="p-3 border rounded-lg bg-gray-50 shadow-sm flex flex-col gap-1">
+                                    <div className="flex justify-between items-center">
+                                        <p className="font-bold text-base">{order.client}</p>
+                                        {/* Tombol Edit dan Delete */}
+                                        <div className="flex items-center gap-1">
+                                            <button 
+                                                onClick={() => handleOpenAddModal(order)} 
+                                                className="p-1 rounded-full text-blue-500 hover:bg-blue-100 transition" 
+                                                title="Edit Order"
+                                            >
+                                                {/* PERBAIKAN 1: Menggunakan PenTool (Sudah Terpasang) */}
+                                                <PenTool className="w-4 h-4" /> 
+                                            </button>
+                                            <button 
+                                                // PERBAIKAN 2: Panggil fungsi konfirmasi custom
+                                                onClick={() => handleConfirmDeleteClick(order.id, order.client)} 
+                                                className="p-1 rounded-full text-red-500 hover:bg-red-100 transition" 
+                                                title="Hapus Order"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-between items-center text-sm">
+                                        <p className="text-gray-700">{order.service}</p>
+                                        <span className={`text-xs px-2 py-0.5 rounded-full border font-semibold ${getStatusStyle(order.status)}`}>
+                                            {order.status}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-gray-500 flex items-center gap-1">
+                                        {order.phone && <span className="mr-2">HP: {order.phone}</span>}
+                                        <Clock className="w-3 h-3"/> {order.date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                         <div className="text-center py-10 text-gray-500 italic">
+                             {selectedDay ? `Tidak ada order pada ${selectedDay.toLocaleDateString('id-ID')}` : 'Pilih tanggal pada kalender untuk melihat detail.'}
+                         </div>
+                    )}
+                     <div className="mt-4 text-xs text-gray-400">
+                        UserID: {userId || 'Loading...'} 
+                    </div>
+                </div>
+
+            </div>
+
+            {/* Modal Tambah/Edit Order */}
+            {isAddModalOpen && (
+                <div className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={handleCloseModal}>
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+                        <h3 className="text-xl font-bold border-b pb-3 mb-4 flex items-center gap-2" style={{ color: colors.primary }}>
+                            {editingOrder ? <PenTool className="w-5 h-5" /> : <Plus className="w-5 h-5" />}
+                            {editingOrder ? 'Edit Order' : 'Tambah Order Baru'}
+                        </h3>
+                        <form onSubmit={handleAddOrUpdateOrder} className="space-y-4">
+                            <div>
+                                <label className="text-sm font-semibold block mb-1">Nama Klien *</label>
+                                <input 
+                                    type="text" 
+                                    value={newOrder.client} 
+                                    onChange={(e) => setNewOrder({...newOrder, client: e.target.value})} 
+                                    className="w-full p-2 border rounded-lg" required 
+                                />
+                            </div>
+                            {/* PERBAIKAN 4: Kolom No Handphone */}
+                            <div>
+                                <label className="text-sm font-semibold block mb-1">No Handphone</label>
+                                <input 
+                                    type="tel" 
+                                    value={newOrder.phone} 
+                                    onChange={(e) => setNewOrder({...newOrder, phone: e.target.value})} 
+                                    className="w-full p-2 border rounded-lg"
+                                    placeholder="Contoh: 08123456789"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-sm font-semibold block mb-1">Layanan/Deskripsi *</label>
+                                <input 
+                                    type="text" 
+                                    value={newOrder.service} 
+                                    onChange={(e) => setNewOrder({...newOrder, service: e.target.value})} 
+                                    className="w-full p-2 border rounded-lg" required 
+                                />
+                            </div>
+                            <div>
+                                <label className="text-sm font-semibold block mb-1">Tanggal & Waktu *</label>
+                                <input 
+                                    type="datetime-local" 
+                                    value={newOrder.date} 
+                                    onChange={(e) => setNewOrder({...newOrder, date: e.target.value})} 
+                                    className="w-full p-2 border rounded-lg" required 
+                                />
+                            </div>
+                             <div>
+                                <label className="text-sm font-semibold block mb-1">Status</label>
+                                <Dropdown 
+                                    value={newOrder.status} 
+                                    onChange={(e) => setNewOrder({...newOrder, status: e.target.value})} 
+                                    options={ORDER_STATUSES}
+                                />
+                            </div>
+                            <div className="flex justify-end gap-3 pt-3">
+                                <button type="button" onClick={handleCloseModal} className="px-4 py-2 border rounded-full text-gray-700 hover:bg-gray-100">Batal</button>
+                                <button type="submit" className="px-4 py-2 rounded-full text-white font-bold" style={{ backgroundColor: colors.primary }}>
+                                    {editingOrder ? 'Simpan Perubahan' : 'Simpan Order'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+            
+            {/* PERBAIKAN 2: Custom Confirmation Modal untuk Delete */}
+            {confirmDelete && (
+                <div className="fixed inset-0 z-[90] bg-black/50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={handleCloseModal}>
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-xs p-6 text-center" onClick={(e) => e.stopPropagation()}>
+                        <AlertTriangle className="w-10 h-10 mx-auto mb-4 text-red-500" />
+                        <h3 className="text-lg font-bold mb-2">Konfirmasi Hapus</h3>
+                        <p className="text-sm text-gray-700 mb-6">Apakah Anda yakin ingin menghapus order dari klien: <strong>{confirmDelete.name}</strong>?</p>
+                        <div className="flex justify-center gap-3">
+                            <button 
+                                type="button" 
+                                onClick={handleCloseModal} 
+                                className="px-4 py-2 border rounded-full text-gray-700 hover:bg-gray-100 flex-1"
+                            >
+                                Batal
+                            </button>
+                            <button 
+                                type="button" 
+                                onClick={() => handleDeleteOrder(confirmDelete.id)} 
+                                className="px-4 py-2 rounded-full text-white font-bold bg-red-500 hover:bg-red-600 flex-1"
+                            >
+                                <Trash2 className="w-4 h-4 inline mr-1" /> Hapus
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -1185,6 +1582,8 @@ const ItemChecker = ({ colors, APP_LOGO_URL }) => {
             clone.style.display = 'block'; // Pastikan terdisplay
             clone.style.transform = 'none';
             
+            // Kita perlu memastikan semua style/classes dari elemen utama dipertahankan
+            // (html2canvas seharusnya menangani ini, tapi clone harus berada di body)
             document.body.appendChild(clone);
             elementToCapture = clone;
         }
@@ -2569,7 +2968,7 @@ const MagicPhotoForm = ({ onGenerate, isGenerating, colors }) => {
                     const response = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: "user", parts: imageParts }], generationConfig: { responseModalities: ['IMAGE'] } }) });
                     if (!response.ok) return null;
                     const result = await response.json();
-                    const base64 = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+                    const base64 = result?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 
                     // FIX: Menambahkan pengecekan base64 dan logging finishReason
                     if (!base64) {
@@ -3280,12 +3679,76 @@ const ArrangementIdeaResults = ({ results, isLoading, colors, setEditContext }) 
 
 const App = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [activeModule, setActiveModule] = useState(MODULES[0].id);
+  const [activeModule, setActiveModule] = useState(MODULES[4].id); // Default to Order Tracker
   const [results, setResults] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [editContext, setEditContext] = useState(null); 
   
-  // State baru untuk konteks edit gambar
-  const [editContext, setEditContext] = useState(null); // { image: url, index: number, layout: string (optional) }
+  // Firebase States
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+
+  // --- FIREBASE INITIALIZATION & AUTHENTICATION ---
+  useEffect(() => {
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+    if (!firebaseConfig) {
+        console.error("Firebase config is missing.");
+        setIsAuthReady(true);
+        return;
+    }
+    
+    let unsubscribe = () => {};
+
+    const initFirebase = async () => {
+      try {
+          const app = initializeApp(firebaseConfig);
+          const firestore = getFirestore(app);
+          const firebaseAuth = getAuth(app);
+          
+          setDb(firestore);
+          setAuth(firebaseAuth);
+
+          const authToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+          // CRITICAL FIX: Await the sign-in operation to ensure a user context is available
+          // before setting up the listener and marking auth ready.
+          try {
+              if (authToken) {
+                  await signInWithCustomToken(firebaseAuth, authToken);
+              } else {
+                  await signInAnonymously(firebaseAuth);
+              }
+          } catch (error) {
+              console.error("Initial Firebase Auth failed:", error);
+              // Sign-in failed, the user might be null, but we still proceed to monitor.
+          }
+          
+          // Use onAuthStateChanged to capture the final, stable state (which should now be authenticated)
+          unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
+              if (user) {
+                  setUserId(user.uid);
+              } else {
+                  // Fallback ID if for some reason user is null after sign-in (shouldn't happen with anonymous)
+                  setUserId(crypto.randomUUID()); 
+              }
+              // Mark as ready only after auth state is confirmed via the listener
+              setIsAuthReady(true);
+          });
+          
+      } catch (e) {
+          console.error("Firebase Initialization Error:", e);
+          setIsAuthReady(true);
+      }
+    };
+
+    initFirebase();
+
+    return () => unsubscribe();
+
+  }, []); // Run only once on mount
 
 
   const toggleSidebar = () => setIsSidebarOpen(prev => !prev);
@@ -3322,8 +3785,9 @@ const App = () => {
     if (activeModule === 'invoice') return <InvoiceMaker colors={colors} APP_LOGO_URL={APP_LOGO_URL} />;
     if (activeModule === 'checker') return <ItemChecker colors={colors} APP_LOGO_URL={APP_LOGO_URL} />;
     if (activeModule === 'magic') return <MagicPhotoForm onGenerate={handleGenerate} isGenerating={isGenerating} colors={colors} />;
+    if (activeModule === 'tracker') return <OrderTracker colors={colors} db={db} userId={userId} isAuthReady={isAuthReady} />;
     return <div className="p-8 text-center">Modul sedang dikembangkan.</div>;
-  }, [activeModule, isGenerating]);
+  }, [activeModule, isGenerating, db, userId, isAuthReady]); // Tambahkan dependencies Firebase
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ backgroundColor: colors.bg, color: colors.text }}>
@@ -3367,7 +3831,7 @@ const App = () => {
         {!isSidebarOpen && <button onClick={toggleSidebar} className="absolute top-4 left-4 p-2 rounded-full md:hidden hover:bg-gray-200 z-40" style={{ color: colors.text, backgroundColor: colors.bg }}><PanelLeft className="w-6 h-6" /></button>}
         <div className="flex-1 p-4 md:p-8 overflow-y-auto">
           <div className="flex flex-col gap-8 w-full h-full">
-            <div className={`w-full bg-white rounded-3xl shadow-xl p-2 ${['invoice', 'checker'].includes(activeModule) ? 'h-full' : 'h-fit'}`} style={{ backgroundColor: colors.bg }}>{currentModuleComponent}</div>
+            <div className={`w-full bg-white rounded-3xl shadow-xl p-2 ${['invoice', 'checker', 'tracker'].includes(activeModule) ? 'h-full' : 'h-fit'}`} style={{ backgroundColor: colors.bg }}>{currentModuleComponent}</div>
             
             {/* Hasil Design Modules, passing setEditContext and updateSingleImage */}
             {activeModule === 'arrangement' && <div className="w-full bg-white rounded-3xl shadow-xl p-2 h-fit" style={{ backgroundColor: colors.bg }}><ArrangementIdeaResults results={{data: results}} isLoading={isGenerating} colors={colors} setEditContext={setEditContext} /></div>}
